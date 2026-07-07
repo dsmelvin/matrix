@@ -1,0 +1,16 @@
+.env
+.env-docker
+/workspace
+
+.DS_Store
+target/
+.playwright-mcp
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### VS Code ###
+.vscode/

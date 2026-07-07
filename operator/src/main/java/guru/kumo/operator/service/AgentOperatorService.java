@@ -1,0 +1,92 @@
+package guru.kumo.operator.service;
+
+import guru.kumo.operator.channel.model.AgentResponse;
+import guru.kumo.operator.model.ChatCompletionRequest;
+import guru.kumo.operator.model.ChatCompletionResponse;
+import guru.kumo.operator.util.ColorEnum;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.image.ImageResponse;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.util.List;
+
+@Slf4j
+@Service
+@Profile("operator")
+public class AgentOperatorService {
+    private static final JsonMapper jsonMapper = new JsonMapper();
+    private final AgentOperator agentOperator;
+    private final ChatMemoryService chatMemoryService;
+
+    AgentOperatorService(AgentOperator agentOperator, ChatMemoryService chatMemoryService) {
+        this.agentOperator = agentOperator;
+        this.chatMemoryService = chatMemoryService;
+    }
+
+    public Flux<AgentResponse> subscribe() {
+        return agentOperator.subscribe();
+    }
+
+    public void publishInferencePayload(ChatCompletionRequest chatCompletionRequest) {
+        if (log.isDebugEnabled()) {
+            log.debug("--> REQUEST BODY: {}", jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsString(chatCompletionRequest).replace("\\\"", "\"").replace("\\t", "\t").replace("\\n", "\n"));
+        }
+    }
+
+    public void publishInferencePayload(ChatCompletionResponse chatCompletionResponse) {
+        if (log.isDebugEnabled()) {
+            log.debug("--> RESPONSE BODY: {}", jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsString(chatCompletionResponse).replace("\\\"", "\"").replace("\\t", "\t").replace("\\n", "\n"));
+        }
+    }
+
+    public ImageResponse processImageModelRequest(String prompt) {
+        return agentOperator.processImageModelRequest(prompt);
+    }
+
+    public String processConsoleInitMessage(List<Message> messageList) {
+        String conversationId = chatMemoryService.createConversationId();
+        String logPrefix = ColorEnum.PURPLE + "[INIT]" + ColorEnum.RESET;
+        agentOperator.publish(new AgentResponse(logPrefix, AgentResponse.Type.INIT, messageList));
+        if (messageList.stream().anyMatch(message -> message.getMessageType() == MessageType.USER)) {
+            agentOperator.processCall(logPrefix, conversationId, messageList);
+        } else {
+            chatMemoryService.addChatMemory(conversationId, messageList);
+        }
+        return conversationId;
+    }
+
+    public void processConsoleRequest(String conversationId, List<Message> messageList) {
+        String logPrefix = ColorEnum.PURPLE + "[CONSOLE]" + ColorEnum.RESET;
+        agentOperator.publish(new AgentResponse(logPrefix, AgentResponse.Type.CONSOLE, messageList));
+        agentOperator.processCall(logPrefix, conversationId, messageList);
+    }
+
+    public String processDiscordRequest(String conversationId, List<Message> messageList) {
+        String logPrefix = ColorEnum.PURPLE + "[DISCORD]" + ColorEnum.RESET;
+        agentOperator.publish(new AgentResponse(logPrefix, AgentResponse.Type.DISCORD, messageList));
+        ChatResponse chatResponse = agentOperator.processCall(logPrefix, conversationId, messageList);
+        if (chatResponse.getResult() != null) {
+            return chatResponse.getResult().getOutput().getText();
+        } else {
+            return "No Response.";
+        }
+    }
+
+    public String processTelegramRequest(String conversationId, List<Message> messageList) {
+        String logPrefix = ColorEnum.PURPLE + "[TELEGRAM]" + ColorEnum.RESET;
+        agentOperator.publish(new AgentResponse(logPrefix, AgentResponse.Type.TELEGRAM, messageList));
+        ChatResponse chatResponse = agentOperator.processCall(logPrefix, conversationId, messageList);
+        if (chatResponse.getResult() != null) {
+            return chatResponse.getResult().getOutput().getText();
+        } else {
+            return "No Response.";
+        }
+    }
+}
+

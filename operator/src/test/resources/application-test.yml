@@ -1,0 +1,3 @@
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%thread] %cyan(%class{0}.java:%line) - %msg%n"
