@@ -1,0 +1,34 @@
+spring:
+  ai:
+    model:
+      chat: ${AI_MODEL_CHAT:openai}
+      image: ${AI_MODEL_IMAGE:}
+    chat:
+      observations:
+        log-prompt: false
+        log-completion: false
+        include-error-logging: false
+    openai:
+      base-url: ${INFERENCE_BASE_URL:}
+      api-key: ${INFERENCE_API_KEY:}
+      chat:
+        model: ${INFERENCE_MODEL:}
+agent:
+  tools: ${AGENT_TOOLS:}
+  mcp-servers-configuration: ${MCP_SERVERS_CONFIGURATION:}
+  chat-model:
+    max-completion-tokens: ${AGENT_MAX_COMPLETION_TOKEN:}
+  message-window-chat-memory:
+    max-messages: ${AGENT_MAX_MESSAGE:500}
+  path:
+    memory: ${AGENT_PATH_MEMORY:}
+  paths:
+    agents: ${AGENT_PATHS_AGENTS:}
+    skills: ${AGENT_PATHS_SKILLS:}
+  channel:
+    telegram:
+      token: ${CHANNEL_TELEGRAM_TOKEN:}
+      userId: ${CHANNEL_TELEGRAM_USER_ID:}
+    discord:
+      token: ${CHANNEL_DISCORD_TOKEN:}
+      channelId: ${CHANNEL_DISCORD_CHANNEL_ID:}
