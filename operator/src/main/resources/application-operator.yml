@@ -1,0 +1,24 @@
+spring:
+  ai:
+    chat:
+      observations:
+        log-prompt: false
+        log-completion: false
+        include-error-logging: false
+    openai:
+      timeout: 1800s
+      base-url: ${INFERENCE_BASE_URL:}
+      api-key: ${INFERENCE_API_KEY:}
+      chat:
+        model: ${INFERENCE_MODEL:}
+
+agent:
+  message-window-chat-memory:
+    max-messages: 500
+  prompt:
+    system: ${AGENT_PROMPT_SYSTEM:}
+  path:
+    memory: ${AGENT_PATH_MEMORY:}
+  paths:
+    agents: ${AGENT_PATHS_AGENTS:}
+    skills: ${AGENT_PATHS_SKILLS:}

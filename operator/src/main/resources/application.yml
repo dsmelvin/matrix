@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: Operator
+  main:
+    allow-bean-definition-overriding: true
+    banner-mode: OFF
+  config:
+    use-legacy-processing: false
+  profiles:
+    active: prod
+    group:
+      prod:
+        - operator
+  jackson:
+    serialization:
+      FAIL_ON_EMPTY_BEANS: false
+    deserialization:
+      ACCEPT_EMPTY_STRING_AS_NULL_OBJECT: true
+    default-property-inclusion: non_empty
+  shell:
+    interactive:
+      enabled: false
+    history:
+      enabled: false
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%thread] %cyan(%class{0}.java:%line) - %msg%n"
+  level:
+    root: WARN
+    guru.kumo.operator: INFO

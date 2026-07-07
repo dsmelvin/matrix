@@ -1,0 +1,14 @@
+.env
+memory
+prompt
+.DS_Store
+target/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### VS Code ###
+.vscode/
