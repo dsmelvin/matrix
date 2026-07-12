@@ -1,53 +1,40 @@
 package guru.kumo.operator.command;
 
+import org.springframework.ai.chat.messages.*;
+import org.springframework.ai.content.Media; // NOTE: verify this package for your Spring AI version —
+import org.springframework.util.MimeType;
 import tools.jackson.core.JsonGenerator;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.type.TypeReference;
-import tools.jackson.databind.DeserializationContext;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.SerializationContext;
-import tools.jackson.databind.ValueDeserializer;
-import tools.jackson.databind.ValueSerializer;
-import tools.jackson.databind.JavaType;
+import tools.jackson.databind.*;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.module.SimpleModule;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.content.Media; // NOTE: verify this package for your Spring AI version —
-// Media has lived under org.springframework.ai.model
-// and org.springframework.ai.content across releases.
-import org.springframework.util.MimeType;
 
 import java.net.URI;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+
+// Media has lived under org.springframework.ai.model
+// and org.springframework.ai.content across releases.
 
 /**
  * Serializes/deserializes {@code List<org.springframework.ai.chat.messages.Message>} to/from JSON,
  * for Spring AI 2.0+ / Jackson 3 (tools.jackson).
- *
+ * <p>
  * Message is an interface implemented by SystemMessage, UserMessage, AssistantMessage,
  * and ToolResponseMessage, so plain bean serialization can't round-trip it without help.
  * This registers a custom (de)serializer that tags each message with its MessageType and
  * reconstructs the right concrete subclass on the way back in.
- *
+ * <p>
  * Jackson 3 notes vs. the old Jackson 2 version of this class:
- *  - ObjectMapper -> JsonMapper (built via JsonMapper.builder(), immutable once built)
- *  - Custom (de)serializers extend ValueSerializer / ValueDeserializer, not
- *    JsonSerializer / JsonDeserializer
- *  - serialize()/deserialize() take a SerializationContext / DeserializationContext, not a
- *    SerializerProvider
- *  - Checked JsonProcessingException is gone; failures surface as unchecked JacksonException
- *  - @JsonProperty and friends are unaffected: annotations still live under
- *    com.fasterxml.jackson.annotation, shared between Jackson 2 and 3
- *
+ * - ObjectMapper -> JsonMapper (built via JsonMapper.builder(), immutable once built)
+ * - Custom (de)serializers extend ValueSerializer / ValueDeserializer, not
+ * JsonSerializer / JsonDeserializer
+ * - serialize()/deserialize() take a SerializationContext / DeserializationContext, not a
+ * SerializerProvider
+ * - Checked JsonProcessingException is gone; failures surface as unchecked JacksonException
+ * - @JsonProperty and friends are unaffected: annotations still live under
+ * com.fasterxml.jackson.annotation, shared between Jackson 2 and 3
+ * <p>
  * NOTE: Spring AI 2.0 moved multi-arg construction of AssistantMessage and ToolResponseMessage
  * behind builders (their old (content, metadata, ...) constructors are now protected/removed,
  * matching the immutable-builder pattern Spring AI adopted across its message and options
@@ -64,10 +51,7 @@ public class ChatMessageListCodec {
         SimpleModule module = new SimpleModule();
         module.addSerializer(Message.class, new MessageSerializer());
         module.addDeserializer(Message.class, new MessageDeserializer());
-
-        this.jsonMapper = JsonMapper.builder()
-                .addModule(module)
-                .build();
+        this.jsonMapper = JsonMapper.builder().addModule(module).build();
     }
 
     public String serialize(List<Message> messages) {
@@ -75,7 +59,8 @@ public class ChatMessageListCodec {
     }
 
     public List<Message> deserialize(String json) {
-        return jsonMapper.readValue(json, new TypeReference<List<Message>>() {});
+        return jsonMapper.readValue(json, new TypeReference<>() {
+        });
     }
 
     private static class MessageSerializer extends ValueSerializer<Message> {
@@ -94,11 +79,9 @@ public class ChatMessageListCodec {
                 if (assistantMessage.getToolCalls() != null && !assistantMessage.getToolCalls().isEmpty()) {
                     gen.writePOJOProperty("toolCalls", assistantMessage.getToolCalls());
                 }
-            }
-            else if (message instanceof ToolResponseMessage toolResponseMessage) {
+            } else if (message instanceof ToolResponseMessage toolResponseMessage) {
                 gen.writePOJOProperty("responses", toolResponseMessage.getResponses());
-            }
-            else if (message instanceof UserMessage userMessage) {
+            } else if (message instanceof UserMessage userMessage) {
                 if (userMessage.getMedia() != null && !userMessage.getMedia().isEmpty()) {
                     gen.writeArrayPropertyStart("media");
                     for (Media media : userMessage.getMedia()) {
@@ -128,8 +111,7 @@ public class ChatMessageListCodec {
             if (data instanceof byte[] bytes) {
                 gen.writeStringProperty("dataEncoding", "base64");
                 gen.writeStringProperty("data", Base64.getEncoder().encodeToString(bytes));
-            }
-            else if (data != null) {
+            } else if (data != null) {
                 // Typically a URL/URI pointing at externally-hosted media.
                 gen.writeStringProperty("dataEncoding", "uri");
                 gen.writeStringProperty("data", data.toString());
@@ -140,7 +122,6 @@ public class ChatMessageListCodec {
     }
 
     private static class MessageDeserializer extends ValueDeserializer<Message> {
-
         @Override
         public Message deserialize(JsonParser p, DeserializationContext ctxt) {
             JsonNode node = ctxt.readTree(p);
@@ -221,12 +202,10 @@ public class ChatMessageListCodec {
             if (dataStr != null) {
                 if ("base64".equals(encoding)) {
                     builder.data(Base64.getDecoder().decode(dataStr));
-                }
-                else {
+                } else {
                     try {
                         builder.data(URI.create(dataStr).toURL());
-                    }
-                    catch (Exception e) {
+                    } catch (Exception e) {
                         // Not a resolvable URL (e.g. a data: URI or opaque identifier) —
                         // fall back to the raw string so no data is lost.
                         builder.data(dataStr);

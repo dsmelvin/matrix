@@ -1,6 +1,8 @@
+/agents
+/skills
+/memory
+/prompt
 .env
-memory
-prompt
 .DS_Store
 target/
 

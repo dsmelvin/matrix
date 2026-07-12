@@ -13,8 +13,11 @@ spring:
         model: ${INFERENCE_MODEL:}
 
 agent:
+  tools: ${AGENT_TOOLS:}
+  chat-model:
+    max-completion-tokens: ${AGENT_MAX_COMPLETION_TOKEN:}
   message-window-chat-memory:
-    max-messages: 500
+    max-messages: ${AGENT_MAX_MESSAGE:500}
   prompt:
     system: ${AGENT_PROMPT_SYSTEM:}
   path:
