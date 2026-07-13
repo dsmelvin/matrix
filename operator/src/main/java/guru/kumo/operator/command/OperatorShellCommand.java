@@ -187,7 +187,7 @@ public class OperatorShellCommand {
         }
         System.out.printf("%s%s%s%n", ColorEnum.GREEN_BOLD_BRIGHT, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET);
         System.out.printf("%s%s%s%n", ColorEnum.GREEN, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET);
-        System.out.printf("%s%s%s%n", ColorEnum.GREEN, chatResponse.getMetadata().getUsage(), ColorEnum.RESET);
+        System.out.printf("%s%s%s%n%n", ColorEnum.GREEN, chatResponse.getMetadata().getUsage(), ColorEnum.RESET);
         return processToolCall(chatOptions, chatResponse);
     }
 
