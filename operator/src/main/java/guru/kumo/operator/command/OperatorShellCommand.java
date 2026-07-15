@@ -14,6 +14,7 @@ import org.springaicommunity.agent.tools.*;
 import org.springaicommunity.agent.tools.task.TaskTool;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentReferences;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentType;
+import org.springaicommunity.agent.tools.task.repository.DefaultTaskRepository;
 import org.springaicommunity.agent.utils.CommandLineQuestionHandler;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -65,7 +66,6 @@ public class OperatorShellCommand {
     private final ChatMemory chatMemory;
     private final OpenAiChatModel chatModel;
     private final ToolCallingManager toolCallingManager;
-    private final List<ToolCallback> tools = new ArrayList<>();
     private final String conversationId;
     private final Terminal terminal;
     private final ResourceLoader resourceLoader;
@@ -73,12 +73,16 @@ public class OperatorShellCommand {
     private final String sessionMemoryPathName;
     private final Integer maxCompletionTokens;
     private final JsonMapper jsonMapper;
+    private final SystemMessage systemMessage;
+    private final List<ToolCallback> agentTools = new ArrayList<>();
+    private final List<Resource> skillResources = new ArrayList<>();
+    private final List<Resource> AgentTasksResources = new ArrayList<>();
 
     OperatorShellCommand(Terminal terminal,
                          ResourceLoader resourceLoader,
                          OpenAiChatModel openAiChatModel,
                          ApplicationEventPublisher applicationEventPublisher,
-                         @Value("${agent.tools}") String[] agentTools,
+                         @Value("${agent.tools}") String[] agentToolList,
                          @Value("${agent.prompt.system}") String operatorSystemPrompt,
                          @Value("${agent.path.memory}") String sessionMemoryPathName,
                          @Value("${agent.paths.agents}") List<String> agentPaths,
@@ -103,9 +107,10 @@ public class OperatorShellCommand {
         this.sessionMemoryPathName = sessionMemoryPathName;
         this.chatMemory = MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
         this.toolCallingManager = ToolCallingManager.builder().build();
-
-        loadAgentsAndSkills(agentPaths, skillPaths);
-        loadTools(applicationEventPublisher, agentTools);
+        this.systemMessage = loadSystemPrompt();
+        loadSkills(skillPaths);
+        loadAgentTasks(agentPaths);
+        loadTools(applicationEventPublisher, agentToolList);
     }
 
     @Command(name = {"operator"})
@@ -123,15 +128,37 @@ public class OperatorShellCommand {
                 saveSessionMemoryFile(saveSessionMemory);
             }
         });
-        ChatOptions chatOptions = maxCompletionTokens == null ?
-                chatModel.getOptions().mutate().toolCallbacks(tools).build() :
-                chatModel.getOptions().mutate().toolCallbacks(tools).maxCompletionTokens(maxCompletionTokens).build();
 
         if (savedSessionMemoryFileName != null) {
             loadSavedSessionMemoryFile(savedSessionMemoryFileName);
-        } else {
-            loadSystemPrompt();
+        } else if (systemMessage.getText() != null) {
+            addChatMemory(conversationId, systemMessage);
+            log.info("System Message loaded successfully");
         }
+
+        if (!skillResources.isEmpty()) {
+            agentTools.addFirst(SkillsTool.builder().addSkillsResources(skillResources).build());
+            log.info("Skills loaded successfully");
+        }
+
+        if (!AgentTasksResources.isEmpty()) {
+            TaskTool.Builder taskToolBuilder = TaskTool.builder()
+                    .taskRepository(new DefaultTaskRepository())
+                    .subagentReferences(ClaudeSubagentReferences.fromResources(AgentTasksResources));
+            ChatClient.Builder chatClientBuilder = ChatClient.create(chatModel).mutate()
+                    .defaultAdvisors(MyLoggingAdvisor.builder().showAvailableTools(true).showSystemMessage(true).labelPrefix("[SUB-AGENT] ").build());
+            ClaudeSubagentType.Builder claudeSubagentTypeBuilder = ClaudeSubagentType.builder().chatClientBuilder("default", chatClientBuilder);
+            if (!skillResources.isEmpty()) {
+                claudeSubagentTypeBuilder.skillsResources(skillResources);
+            }
+            taskToolBuilder.subagentTypes(claudeSubagentTypeBuilder.build());
+            agentTools.addFirst(taskToolBuilder.build());
+            log.info("Agents loaded successfully");
+        }
+
+        ChatOptions chatOptions = maxCompletionTokens == null ?
+                chatModel.getOptions().mutate().toolCallbacks(agentTools).build() :
+                chatModel.getOptions().mutate().toolCallbacks(agentTools).maxCompletionTokens(maxCompletionTokens).build();
 
         try {
             loadPromptFile(chatOptions, promptFileName);
@@ -303,7 +330,7 @@ public class OperatorShellCommand {
         return sessionMemoryFile;
     }
 
-    private void loadSystemPrompt() {
+    private SystemMessage loadSystemPrompt() {
         if (operatorSystemPrompt != null && operatorSystemPrompt.exists() && operatorSystemPrompt.isFile()) {
             String workingDirectory = System.getProperty("user.dir");
             String platform = System.getProperty("os.name").toLowerCase();
@@ -318,60 +345,36 @@ public class OperatorShellCommand {
             systemPromptEnvMap.put("AGENT_MAX_COMPLETION_TOKEN", maxCompletionTokens == null ? "as defined" : maxCompletionTokens);
 
             PromptTemplate systemTemplate = new PromptTemplate(operatorSystemPrompt);
-            String systemText = systemTemplate.render(systemPromptEnvMap);
-            SystemMessage systemMessage = SystemMessage.builder().text(systemText).build();
-            addChatMemory(conversationId, systemMessage);
-            log.info("System Message loaded successfully");
+            return SystemMessage.builder().text(systemTemplate.render(systemPromptEnvMap)).build();
         }
+        return null;
     }
 
-    private List<Resource> loadSkills(List<String> skillPaths) {
-        if (skillPaths == null || skillPaths.isEmpty()) return List.of();
-        ArrayList<Resource> resourceList = new ArrayList<>();
+    private void loadSkills(List<String> skillPaths) {
+        if (skillPaths == null || skillPaths.isEmpty()) return;
         skillPaths.forEach(skillPath -> {
             if (skillPath.startsWith("/")) {
                 FileSystemResource resource = new FileSystemResource(skillPath);
                 if (Utils.containsFile(resource.getFile(), "SKILL.md")) {
-                    resourceList.add(resource);
+                    skillResources.add(resource);
                 }
             } else if (!skillPath.isEmpty()) {
-                resourceList.add(resourceLoader.getResource(skillPath));
+                skillResources.add(resourceLoader.getResource(skillPath));
             }
         });
-        if (!resourceList.isEmpty()) {
-            tools.add(SkillsTool.builder().addSkillsResources(resourceList).build());
-            log.info("Skills loaded successfully");
-        }
-        return resourceList;
     }
 
-    private void loadAgentsAndSkills(List<String> agentPaths, List<String> skillPaths) {
-        List<Resource> skillResources = loadSkills(skillPaths);
-
+    private void loadAgentTasks(List<String> agentPaths) {
         if (agentPaths == null || agentPaths.isEmpty()) return;
-        ArrayList<Resource> resources = new ArrayList<>();
         agentPaths.forEach(agentPath -> {
-            if (agentPath.startsWith("/")) resources.add(new FileSystemResource(agentPath));
-            else if (!agentPath.isEmpty()) resources.add(resourceLoader.getResource(agentPath));
+            if (agentPath.startsWith("/")) AgentTasksResources.add(new FileSystemResource(agentPath));
+            else if (!agentPath.isEmpty()) AgentTasksResources.add(resourceLoader.getResource(agentPath));
         });
-        if (!resources.isEmpty() && resources.stream().anyMatch(Resource::exists)) {
-            TaskTool.Builder taskToolBuilder = TaskTool.builder().subagentReferences(ClaudeSubagentReferences.fromResources(resources));
-            ClaudeSubagentType.Builder claudeSubagentTypeBuilder = ClaudeSubagentType.builder()
-                    .chatClientBuilder("default", ChatClient.create(chatModel).mutate().defaultTools(tools)
-                            .defaultAdvisors(MyLoggingAdvisor.builder().showAvailableTools(true).labelPrefix("[SUB-AGENT] ").build())
-                    );
-            if (!skillResources.isEmpty()) {
-                claudeSubagentTypeBuilder.skillsResources(skillResources);
-            }
-            taskToolBuilder.subagentTypes(claudeSubagentTypeBuilder.build());
-            tools.add(taskToolBuilder.build());
-            log.info("Agents loaded successfully");
-        }
     }
 
-    private void loadTools(ApplicationEventPublisher applicationEventPublisher, String[] agentTools) {
+    private void loadTools(ApplicationEventPublisher applicationEventPublisher, String[] agentToolList) {
         ArrayList<ToolCallback[]> toolList = new ArrayList<>();
-        for (String at : agentTools) {
+        for (String at : agentToolList) {
             switch (at) {
                 case "ImageReaderTool" -> toolList.add(ToolCallbacks.from(ImageReaderTool.builder().build()));
                 case "GrepTool" -> toolList.add(ToolCallbacks.from(GrepTool.builder().build()));
@@ -387,7 +390,7 @@ public class OperatorShellCommand {
                         toolList.add(ToolCallbacks.from(TodoWriteTool.builder().todoEventHandler(event -> applicationEventPublisher.publishEvent(new TodoUpdateEvent(this, event.todos()))).build()));
             }
         }
-        tools.addAll(Arrays.asList(toolList.stream().flatMap(Arrays::stream).toArray(ToolCallback[]::new)));
+        agentTools.addAll(Arrays.asList(toolList.stream().flatMap(Arrays::stream).toArray(ToolCallback[]::new)));
     }
 
     private void addChatMemory(String conversationId, Message message) {
