@@ -1,5 +1,6 @@
 package guru.kumo.operator.command;
 
+import guru.kumo.operator.advisor.ImageReaderToolResponseAdvisor;
 import guru.kumo.operator.advisor.MyLoggingAdvisor;
 import guru.kumo.operator.tool.ImageReaderTool;
 import guru.kumo.operator.tool.TodoUpdateEvent;
@@ -146,7 +147,8 @@ public class OperatorShellCommand {
                     .taskRepository(new DefaultTaskRepository())
                     .subagentReferences(ClaudeSubagentReferences.fromResources(AgentTasksResources));
             ChatClient.Builder chatClientBuilder = ChatClient.create(chatModel).mutate()
-                    .defaultAdvisors(MyLoggingAdvisor.builder().showAvailableTools(true).showSystemMessage(true).labelPrefix("[SUB-AGENT] ").build());
+                    .defaultAdvisors(ImageReaderToolResponseAdvisor.builder().responseConverter(this::decodeAndDescribeImage).build(),
+                            MyLoggingAdvisor.builder().showAvailableTools(true).showSystemMessage(true).labelPrefix("[SUB-AGENT] ").build());
             ClaudeSubagentType.Builder claudeSubagentTypeBuilder = ClaudeSubagentType.builder().chatClientBuilder("default", chatClientBuilder);
             if (!skillResources.isEmpty()) {
                 claudeSubagentTypeBuilder.skillsResources(skillResources);
@@ -157,8 +159,8 @@ public class OperatorShellCommand {
         }
 
         ChatOptions chatOptions = maxCompletionTokens == null ?
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).build() :
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).maxCompletionTokens(maxCompletionTokens).build();
+                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
+                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
 
         try {
             loadPromptFile(chatOptions, promptFileName);
@@ -227,22 +229,7 @@ public class OperatorShellCommand {
             if (toolResponseMessage.getResponses().stream().anyMatch(toolResponse -> toolResponse.name().equals(ImageReaderTool.name))) {
                 ArrayList<Message> messageArrayList = new ArrayList<>();
                 messageArrayList.add(toolResponseMessage);
-                toolResponseMessage.getResponses().forEach(toolResponse -> {
-                    if (toolResponse.name().equals(ImageReaderTool.name)) {
-                        UserMessage.Builder builder = UserMessage.builder().text(ImageReaderTool.name);
-                        FileSystemResource resource = new FileSystemResource(toolResponse.responseData().replace("\"", ""));
-                        try {
-                            MimeType mimeType = MimeTypeUtils.parseMimeType(Files.probeContentType(resource.getFilePath()));
-                            if (!mimeType.equalsTypeAndSubtype(MimeTypeUtils.IMAGE_JPEG) && !mimeType.equalsTypeAndSubtype(MimeTypeUtils.IMAGE_PNG)) {
-                                builder.text("Can't load images other than PNG or JPEG").build();
-                            }
-                            builder.media(new Media(mimeType, resource));
-                        } catch (Exception e) {
-                            builder.text(e.getMessage()).build();
-                        }
-                        messageArrayList.add(builder.build());
-                    }
-                });
+                messageArrayList.add(decodeAndDescribeImage(toolResponseMessage));
                 chatResponse = processCall(chatOptions, messageArrayList);
             } else {
                 chatResponse = processCall(chatOptions, List.of(toolResponseMessage));
@@ -399,6 +386,27 @@ public class OperatorShellCommand {
 
     private void addChatMemory(String conversationId, List<Message> message) {
         chatMemory.add(conversationId, message);
+    }
+
+    private Message decodeAndDescribeImage(ToolResponseMessage toolResponseMessage) {
+        Message message = toolResponseMessage;
+        for (ToolResponseMessage.ToolResponse toolResponse : toolResponseMessage.getResponses()) {
+            if (toolResponse.name().equals(ImageReaderTool.name)) {
+                UserMessage.Builder builder = UserMessage.builder().text(ImageReaderTool.name);
+                FileSystemResource resource = new FileSystemResource(toolResponse.responseData().replace("\"", ""));
+                try {
+                    MimeType mimeType = MimeTypeUtils.parseMimeType(Files.probeContentType(resource.getFilePath()));
+                    if (!mimeType.equalsTypeAndSubtype(MimeTypeUtils.IMAGE_JPEG) && !mimeType.equalsTypeAndSubtype(MimeTypeUtils.IMAGE_PNG)) {
+                        builder.text("Can't load images other than PNG or JPEG").build();
+                    }
+                    builder.media(new Media(mimeType, resource));
+                } catch (Exception e) {
+                    builder.text(e.getMessage()).build();
+                }
+                message = builder.build();
+            }
+        }
+        return message;
     }
 
     private void discardPendingInput() {
