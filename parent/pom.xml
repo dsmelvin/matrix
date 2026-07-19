@@ -9,6 +9,7 @@
     <name>Parent POM</name>
     <description>Parent POM for guru.kumo modules</description>
     <properties>
+        <flexmark.version>0.64.8</flexmark.version>
         <java.version>25</java.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-plugin-skillsjars.version>0.0.7</maven-plugin-skillsjars.version>
@@ -44,6 +45,11 @@
                 <version>${spring-shell.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.vladsch.flexmark</groupId>
+                <artifactId>flexmark-html2md-converter</artifactId>
+                <version>${flexmark.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.springaicommunity</groupId>

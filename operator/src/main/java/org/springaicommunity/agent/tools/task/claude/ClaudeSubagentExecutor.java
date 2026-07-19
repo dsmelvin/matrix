@@ -1,0 +1,80 @@
+/*
+ * Copyright 2025 - 2025 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.springaicommunity.agent.tools.task.claude;
+
+import guru.kumo.operator.service.OperatorService;
+import guru.kumo.operator.util.ColorEnum;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springaicommunity.agent.common.task.subagent.SubagentDefinition;
+import org.springaicommunity.agent.common.task.subagent.SubagentExecutor;
+import org.springaicommunity.agent.common.task.subagent.TaskCall;
+import org.springaicommunity.agent.tools.SkillsTool;
+import org.springaicommunity.agent.utils.Skills;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.core.io.Resource;
+import org.springframework.util.CollectionUtils;
+
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+public class ClaudeSubagentExecutor implements SubagentExecutor {
+    private static final Logger logger = LoggerFactory.getLogger(ClaudeSubagentExecutor.class);
+    private final ChatModel chatModel;
+    private final List<ToolCallback> agentTools;
+    private final List<Resource> skillResources;
+    private final OperatorService operatorService;
+
+    @Override
+    public String getKind() {
+        return ClaudeSubagentDefinition.KIND;
+    }
+
+    public ClaudeSubagentExecutor(ChatModel chatModel, List<ToolCallback> agentTools, List<Resource> skillResources, OperatorService operatorService) {
+        this.chatModel = chatModel;
+        this.agentTools = agentTools;
+        this.skillResources = skillResources;
+        this.operatorService = operatorService;
+    }
+
+    @Override
+    public String execute(TaskCall taskCall, SubagentDefinition subagent) {
+        var claudeSubagent = (ClaudeSubagentDefinition) subagent;
+        String preloadedSkillsSystemSuffix = "";
+        if (!CollectionUtils.isEmpty(claudeSubagent.skills()) && !CollectionUtils.isEmpty(this.skillResources)) {
+            List<SkillsTool.Skill> skills = Skills.loadResources(skillResources);
+            preloadedSkillsSystemSuffix = "\n" + skills.stream().filter(s -> claudeSubagent.skills().contains(s.name()))
+                    .map(skill -> "%s\nBase directory for this skill: %s\n\n%s".formatted(skill.toXml(),
+                            skill.basePath(), skill.content())).collect(Collectors.joining("\n\n"));
+        }
+
+        SystemMessage systemMessage = SystemMessage.builder().text(claudeSubagent.getContent() + preloadedSkillsSystemSuffix).build();
+        UserMessage userMessage = UserMessage.builder().text(taskCall.prompt()).build();
+        String conversationId = UUID.randomUUID().toString();
+        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(100).build();
+
+        System.out.printf("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET);
+        System.out.printf("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET);
+
+        return operatorService.processCall("[" + taskCall.subagent_type() + "]", chatModel, agentTools, chatMemory, conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
+    }
+}

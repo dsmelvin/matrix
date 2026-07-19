@@ -13,8 +13,7 @@ Working directory: {WorkingDirectory}
 Platform: {Platform}  
 OS Version: {OSVersion}  
 Today's date: {Today}  
-Max completion tokens: {AGENT_MAX_COMPLETION_TOKEN}  
+OS Shell: {OSShell}
 
 # Reference Link
-[Spring AI](https://github.com/spring-projects/spring-ai)  
-[Spring AI Agent Utils](https://github.com/spring-ai-community/spring-ai-agent-utils/tree/main)
+[Spring AI](https://github.com/spring-projects/spring-ai)

@@ -1,7 +1,6 @@
 package guru.kumo.operator.command;
 
-import guru.kumo.operator.advisor.ImageReaderToolResponseAdvisor;
-import guru.kumo.operator.advisor.MyLoggingAdvisor;
+import guru.kumo.operator.service.OperatorService;
 import guru.kumo.operator.tool.ImageReaderTool;
 import guru.kumo.operator.tool.TodoUpdateEvent;
 import guru.kumo.operator.tool.TodoWriteTool;
@@ -16,18 +15,13 @@ import org.springaicommunity.agent.tools.task.TaskTool;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentReferences;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentType;
 import org.springaicommunity.agent.tools.task.repository.DefaultTaskRepository;
-import org.springaicommunity.agent.utils.CommandLineQuestionHandler;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
-import org.springframework.ai.chat.messages.*;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.ai.content.Media;
-import org.springframework.ai.model.tool.ToolCallingManager;
-import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
@@ -36,22 +30,17 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.shell.core.command.annotation.Option;
 import org.springframework.stereotype.Component;
-import org.springframework.util.MimeType;
-import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.StreamUtils;
 import org.springframework.util.StringUtils;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -63,55 +52,40 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Profile("operator")
 public class OperatorShellCommand {
     public static final ChatMessageListCodec chatMessageListCodec = new ChatMessageListCodec();
+    private static final ArrayList<ToolCallback> agentTools = new ArrayList<>();
 
     private final ChatMemory chatMemory;
     private final OpenAiChatModel chatModel;
-    private final ToolCallingManager toolCallingManager;
     private final String conversationId;
     private final Terminal terminal;
-    private final ResourceLoader resourceLoader;
     private final Resource operatorSystemPrompt;
     private final String sessionMemoryPathName;
-    private final Integer maxCompletionTokens;
-    private final JsonMapper jsonMapper;
     private final SystemMessage systemMessage;
-    private final List<ToolCallback> agentTools = new ArrayList<>();
-    private final List<Resource> skillResources = new ArrayList<>();
-    private final List<Resource> AgentTasksResources = new ArrayList<>();
+    private final OperatorService operatorService;
 
     OperatorShellCommand(Terminal terminal,
-                         ResourceLoader resourceLoader,
                          OpenAiChatModel openAiChatModel,
                          ApplicationEventPublisher applicationEventPublisher,
+                         OperatorService operatorService,
                          @Value("${agent.tools}") String[] agentToolList,
                          @Value("${agent.prompt.system}") String operatorSystemPrompt,
                          @Value("${agent.path.memory}") String sessionMemoryPathName,
                          @Value("${agent.paths.agents}") List<String> agentPaths,
                          @Value("${agent.paths.skills}") List<String> skillPaths,
-                         @Value("${agent.message-window-chat-memory.max-messages}") int maxMessages,
-                         @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens) {
+                         @Value("${agent.message-window-chat-memory.max-messages}") int maxMessages) {
         this.terminal = terminal;
-        this.resourceLoader = resourceLoader;
         this.chatModel = openAiChatModel;
+        this.operatorService = operatorService;
         this.conversationId = UUID.randomUUID().toString();
-        this.maxCompletionTokens = maxCompletionTokens;
-        this.jsonMapper = JsonMapper.builder().build();
-
-        if (operatorSystemPrompt.startsWith("/")) {
-            this.operatorSystemPrompt = new FileSystemResource(operatorSystemPrompt);
-        } else if (!operatorSystemPrompt.isEmpty()) {
-            this.operatorSystemPrompt = resourceLoader.getResource(operatorSystemPrompt);
-        } else {
-            this.operatorSystemPrompt = null;
-        }
+        this.operatorSystemPrompt = new FileSystemResource(operatorSystemPrompt);
 
         this.sessionMemoryPathName = sessionMemoryPathName;
         this.chatMemory = MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
-        this.toolCallingManager = ToolCallingManager.builder().build();
         this.systemMessage = loadSystemPrompt();
-        loadSkills(skillPaths);
-        loadAgentTasks(agentPaths);
-        loadTools(applicationEventPublisher, agentToolList);
+
+        List<Resource> skillResources = loadSkills(skillPaths);
+        List<Resource> agentTasksResources = loadAgentTasks(agentPaths);
+        agentTools.addAll(loadTools(applicationEventPublisher, agentToolList, skillResources, agentTasksResources));
     }
 
     @Command(name = {"operator"})
@@ -132,38 +106,14 @@ public class OperatorShellCommand {
 
         if (savedSessionMemoryFileName != null) {
             loadSavedSessionMemoryFile(savedSessionMemoryFileName);
-        } else if (systemMessage.getText() != null) {
-            addChatMemory(conversationId, systemMessage);
+        } else if (systemMessage != null && systemMessage.getText() != null) {
+            chatMemory.add(conversationId, systemMessage);
             log.info("System Message loaded successfully");
+            System.out.printf("%s[PREFILL][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, systemMessage.getText(), ColorEnum.RESET);
         }
-
-        if (!skillResources.isEmpty()) {
-            agentTools.addFirst(SkillsTool.builder().addSkillsResources(skillResources).build());
-            log.info("Skills loaded successfully");
-        }
-
-        if (!AgentTasksResources.isEmpty()) {
-            TaskTool.Builder taskToolBuilder = TaskTool.builder()
-                    .taskRepository(new DefaultTaskRepository())
-                    .subagentReferences(ClaudeSubagentReferences.fromResources(AgentTasksResources));
-            ChatClient.Builder chatClientBuilder = ChatClient.create(chatModel).mutate()
-                    .defaultAdvisors(ImageReaderToolResponseAdvisor.builder().responseConverter(this::decodeAndDescribeImage).build(),
-                            MyLoggingAdvisor.builder().showAvailableTools(true).showSystemMessage(true).labelPrefix("[SUB-AGENT] ").build());
-            ClaudeSubagentType.Builder claudeSubagentTypeBuilder = ClaudeSubagentType.builder().chatClientBuilder("default", chatClientBuilder);
-            if (!skillResources.isEmpty()) {
-                claudeSubagentTypeBuilder.skillsResources(skillResources);
-            }
-            taskToolBuilder.subagentTypes(claudeSubagentTypeBuilder.build());
-            agentTools.addFirst(taskToolBuilder.build());
-            log.info("Agents loaded successfully");
-        }
-
-        ChatOptions chatOptions = maxCompletionTokens == null ?
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
 
         try {
-            loadPromptFile(chatOptions, promptFileName);
+            loadPromptFile(promptFileName);
             LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
             StringBuilder buffer = new StringBuilder();
             boolean collecting = false;
@@ -184,7 +134,9 @@ public class OperatorShellCommand {
                         System.out.printf("%sProcessing ...%s%n", ColorEnum.GREEN_BOLD_BRIGHT, ColorEnum.RESET);
                         // Blank line = end of message, send it
                         try {
-                            processCall(chatOptions, List.of(UserMessage.builder().text(buffer.toString()).build()));
+                            UserMessage userMessage = UserMessage.builder().text(buffer.toString()).build();
+                            System.out.printf("%s[PREFILL][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, userMessage.getText(), ColorEnum.RESET);
+                            operatorService.processCall("[OPERATOR]", chatModel, agentTools, chatMemory, conversationId, List.of(userMessage));
                         } catch (Exception e) {
                             if (log.isDebugEnabled()) {
                                 log.error("Failed to process chat message", e);
@@ -206,54 +158,16 @@ public class OperatorShellCommand {
         System.out.printf("%sSession Closed.%s%n", ColorEnum.GREEN_BOLD_BRIGHT, ColorEnum.RESET);
     }
 
-    private ChatResponse processCall(ChatOptions chatOptions, List<Message> messages) {
-        addChatMemory(conversationId, messages);
-        Prompt prompt = new Prompt(chatMemory.get(conversationId), chatOptions);
-        ChatResponse chatResponse = chatModel.call(prompt);
-        addChatMemory(conversationId, chatResponse.getResult().getOutput());
-        if (chatResponse.getResult().getOutput().getMetadata().containsKey("reasoningContent")) {
-            System.out.printf("%sReasoning Content:[%n%s]%s%n", ColorEnum.YELLOW_BOLD_BRIGHT, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET);
-        }
-        System.out.printf("%s%s%s%n", ColorEnum.GREEN_BOLD_BRIGHT, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET);
-        System.out.printf("%s%s%s%n", ColorEnum.GREEN, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET);
-        System.out.printf("%s%s%s%n%n", ColorEnum.GREEN, chatResponse.getMetadata().getUsage(), ColorEnum.RESET);
-        return processToolCall(chatOptions, chatResponse);
-    }
-
-    private ChatResponse processToolCall(ChatOptions chatOptions, ChatResponse chatResponse) {
-        while (chatResponse.hasToolCalls()) {
-            chatResponse.getResult().getOutput().getToolCalls().forEach(this::toolCallToString);
-            ToolExecutionResult toolExecutionResult = toolCallingManager.executeToolCalls(new Prompt(chatMemory.get(conversationId), chatOptions), chatResponse);
-            ToolResponseMessage toolResponseMessage = (ToolResponseMessage) toolExecutionResult.conversationHistory().getLast();
-            toolResponseMessage.getResponses().forEach(this::toolResponseToString);
-            if (toolResponseMessage.getResponses().stream().anyMatch(toolResponse -> toolResponse.name().equals(ImageReaderTool.name))) {
-                ArrayList<Message> messageArrayList = new ArrayList<>();
-                messageArrayList.add(toolResponseMessage);
-                messageArrayList.add(decodeAndDescribeImage(toolResponseMessage));
-                chatResponse = processCall(chatOptions, messageArrayList);
-            } else {
-                chatResponse = processCall(chatOptions, List.of(toolResponseMessage));
-            }
-        }
-        return chatResponse;
-    }
-
-    private void toolCallToString(AssistantMessage.ToolCall toolCall) {
-        System.out.println(ColorEnum.CYAN + String.format("TollCall[id=%s, type=%s, name=%s, arguments={%s}]", toolCall.id(), toolCall.type(), toolCall.name(), toolCall.arguments().substring(0, Math.min(132, toolCall.arguments().length()))) + ColorEnum.RESET);
-    }
-
-    private void toolResponseToString(ToolResponseMessage.ToolResponse toolResponse) {
-        System.out.println(ColorEnum.MAGENTA + String.format("ToolResponse[id=%s, name=%s, responseData=%s]", toolResponse.id(), toolResponse.name(), toolResponse.responseData().substring(0, Math.min(132, toolResponse.responseData().length()))) + ColorEnum.RESET);
-    }
-
-    private void loadPromptFile(ChatOptions chatOptions, String promptFileName) {
+    private void loadPromptFile(String promptFileName) {
         try {
             if (promptFileName == null) return;
             File promptFile = new File(promptFileName);
             if (promptFile.exists()) {
                 try (FileInputStream fileInputStream = new FileInputStream(promptFile)) {
                     log.info("Prompt file loaded successfully. {}", promptFile.getAbsolutePath());
-                    processCall(chatOptions, List.of(UserMessage.builder().text(StreamUtils.copyToString(fileInputStream, StandardCharsets.UTF_8)).build()));
+                    UserMessage userMessage = UserMessage.builder().text(StreamUtils.copyToString(fileInputStream, StandardCharsets.UTF_8)).build();
+                    System.out.printf("%s[PREFILL][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, userMessage.getText(), ColorEnum.RESET);
+                    operatorService.processCall("[OPERATOR]", chatModel, agentTools, chatMemory, conversationId, List.of(userMessage));
                 }
             }
         } catch (IOException e) {
@@ -329,84 +243,94 @@ public class OperatorShellCommand {
             systemPromptEnvMap.put("Platform", platform);
             systemPromptEnvMap.put("OSVersion", osVersion);
             systemPromptEnvMap.put("Today", todayDate);
-            systemPromptEnvMap.put("AGENT_MAX_COMPLETION_TOKEN", maxCompletionTokens == null ? "as defined" : maxCompletionTokens);
+            systemPromptEnvMap.put("MEMORIES_ROOT_DIERCTORY", sessionMemoryPathName == null ? "NONE" : sessionMemoryPathName);
+            systemPromptEnvMap.put("OSShell", System.getenv("SHELL") == null ? "UNKNOWN" : System.getenv("SHELL"));
 
             PromptTemplate systemTemplate = new PromptTemplate(operatorSystemPrompt);
+            log.info("System Message Environment Variables: {}", systemPromptEnvMap);
             return SystemMessage.builder().text(systemTemplate.render(systemPromptEnvMap)).build();
         }
         return null;
     }
 
-    private void loadSkills(List<String> skillPaths) {
-        if (skillPaths == null || skillPaths.isEmpty()) return;
+    private List<Resource> loadSkills(List<String> skillPaths) {
+        List<Resource> skillResources = new ArrayList<>();
+        if (skillPaths == null || skillPaths.isEmpty()) return skillResources;
         skillPaths.forEach(skillPath -> {
-            if (skillPath.startsWith("/")) {
-                FileSystemResource resource = new FileSystemResource(skillPath);
-                if (Utils.containsFile(resource.getFile(), "SKILL.md")) {
-                    skillResources.add(resource);
-                }
-            } else if (!skillPath.isEmpty()) {
-                skillResources.add(resourceLoader.getResource(skillPath));
+            FileSystemResource resource = new FileSystemResource(skillPath);
+            if (Utils.containsFile(resource.getFile(), "SKILL.md")) {
+                skillResources.add(resource);
             }
         });
+        return skillResources;
     }
 
-    private void loadAgentTasks(List<String> agentPaths) {
-        if (agentPaths == null || agentPaths.isEmpty()) return;
+    private List<Resource> loadAgentTasks(List<String> agentPaths) {
+        List<Resource> agentTasksResources = new ArrayList<>();
+        if (agentPaths == null || agentPaths.isEmpty()) return agentTasksResources;
         agentPaths.forEach(agentPath -> {
-            if (agentPath.startsWith("/")) AgentTasksResources.add(new FileSystemResource(agentPath));
-            else if (!agentPath.isEmpty()) AgentTasksResources.add(resourceLoader.getResource(agentPath));
+            FileSystemResource resource = new FileSystemResource(agentPath);
+            if (resource.exists() && resource.isFile()) {
+                agentTasksResources.add(resource);
+            }
         });
+        return agentTasksResources;
     }
 
-    private void loadTools(ApplicationEventPublisher applicationEventPublisher, String[] agentToolList) {
-        ArrayList<ToolCallback[]> toolList = new ArrayList<>();
+    private ArrayList<ToolCallback> loadTools(ApplicationEventPublisher applicationEventPublisher, String[] agentToolList, List<Resource> skillResources, List<Resource> agentTasksResources) {
+        List<ToolCallback[]> toolList = new ArrayList<>();
         for (String at : agentToolList) {
             switch (at) {
-                case "ImageReaderTool" -> toolList.add(ToolCallbacks.from(ImageReaderTool.builder().build()));
-                case "GrepTool" -> toolList.add(ToolCallbacks.from(GrepTool.builder().build()));
-                case "GlobTool" -> toolList.add(ToolCallbacks.from(GlobTool.builder().build()));
-                case "ShellTools" -> toolList.add(ToolCallbacks.from(ShellTools.builder().build()));
-                case "FileSystemTools" -> toolList.add(ToolCallbacks.from(FileSystemTools.builder().build()));
-                case "ListDirectoryTool" -> toolList.add(ToolCallbacks.from(ListDirectoryTool.builder().build()));
-                case "SmartWebFetchTool" ->
-                        toolList.add(ToolCallbacks.from(SmartWebFetchTool.builder(ChatClient.create(chatModel)).build()));
-                case "AskUserQuestionTool" ->
-                        toolList.add(ToolCallbacks.from(AskUserQuestionTool.builder().questionHandler(new CommandLineQuestionHandler()).build()));
-                case "TodoWriteTool" ->
-                        toolList.add(ToolCallbacks.from(TodoWriteTool.builder().todoEventHandler(event -> applicationEventPublisher.publishEvent(new TodoUpdateEvent(this, event.todos()))).build()));
-            }
-        }
-        agentTools.addAll(Arrays.asList(toolList.stream().flatMap(Arrays::stream).toArray(ToolCallback[]::new)));
-    }
-
-    private void addChatMemory(String conversationId, Message message) {
-        addChatMemory(conversationId, List.of(message));
-    }
-
-    private void addChatMemory(String conversationId, List<Message> message) {
-        chatMemory.add(conversationId, message);
-    }
-
-    private Message decodeAndDescribeImage(ToolResponseMessage toolResponseMessage) {
-        Message message = toolResponseMessage;
-        for (ToolResponseMessage.ToolResponse toolResponse : toolResponseMessage.getResponses()) {
-            if (toolResponse.name().equals(ImageReaderTool.name)) {
-                UserMessage.Builder builder = UserMessage.builder().text(ImageReaderTool.name);
-                FileSystemResource resource = new FileSystemResource(toolResponse.responseData().replace("\"", ""));
-                try {
-                    MimeType mimeType = MimeTypeUtils.parseMimeType(Files.probeContentType(resource.getFilePath()));
-                    if (!mimeType.equalsTypeAndSubtype(MimeTypeUtils.IMAGE_JPEG) && !mimeType.equalsTypeAndSubtype(MimeTypeUtils.IMAGE_PNG)) {
-                        builder.text("Can't load images other than PNG or JPEG").build();
+                case "TaskTool" -> {
+                    if (!agentTasksResources.isEmpty()) {
+                        agentTools.add(TaskTool.builder().taskRepository(new DefaultTaskRepository())
+                                .subagentReferences(ClaudeSubagentReferences.fromResources(agentTasksResources))
+                                .subagentTypes(ClaudeSubagentType.builder()
+                                        .chatModel(chatModel).agentTools(agentTools).skillResources(skillResources).operatorService(operatorService).build()).build());
+                        log.info("TaskTool loaded successfully");
                     }
-                    builder.media(new Media(mimeType, resource));
-                } catch (Exception e) {
-                    builder.text(e.getMessage()).build();
                 }
-                message = builder.build();
+                case "SkillTool" -> {
+                    if (!skillResources.isEmpty()) {
+                        agentTools.add(SkillsTool.builder().addSkillsResources(skillResources).build());
+                        log.info("SkillTool loaded successfully");
+                    }
+                }
+                case "ImageReaderTool" -> {
+                    toolList.add(ToolCallbacks.from(ImageReaderTool.builder().build()));
+                    log.info("ImageReaderTool loaded successfully");
+                }
+                case "GrepTool" -> {
+                    toolList.add(ToolCallbacks.from(GrepTool.builder().build()));
+                    log.info("GrepTool loaded successfully");
+                }
+                case "GlobTool" -> {
+                    toolList.add(ToolCallbacks.from(GlobTool.builder().build()));
+                    log.info("GlobTool loaded successfully");
+                }
+                case "ShellTools" -> {
+                    toolList.add(ToolCallbacks.from(ShellTools.builder().build()));
+                    log.info("ShellTools loaded successfully");
+                }
+                case "FileSystemTools" -> {
+                    toolList.add(ToolCallbacks.from(FileSystemTools.builder().build()));
+                    log.info("FileSystemTools loaded successfully");
+                }
+                case "ListDirectoryTool" -> {
+                    toolList.add(ToolCallbacks.from(ListDirectoryTool.builder().build()));
+                    log.info("ListDirectoryTool loaded successfully");
+                }
+                case "SmartWebFetchTool" -> {
+                    toolList.add(ToolCallbacks.from(SmartWebFetchTool.builder(ChatClient.create(chatModel)).build()));
+                    log.info("SmartWebFetchTool loaded successfully");
+                }
+                case "TodoWriteTool" -> {
+                    toolList.add(ToolCallbacks.from(TodoWriteTool.builder().todoEventHandler(event -> applicationEventPublisher.publishEvent(new TodoUpdateEvent(this, event.todos()))).build()));
+                    log.info("TodoWriteTool loaded successfully");
+                }
             }
         }
-        return message;
+        return new ArrayList<>(Arrays.asList(toolList.stream().flatMap(Arrays::stream).toArray(ToolCallback[]::new)));
     }
 
     private void discardPendingInput() {
