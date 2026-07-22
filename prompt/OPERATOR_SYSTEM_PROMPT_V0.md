@@ -11,9 +11,12 @@
 # Information about this system
 Working directory: {WorkingDirectory}  
 Platform: {Platform}  
+OS Shell: {OSShell}  
 OS Version: {OSVersion}  
-Today's date: {Today}  
-OS Shell: {OSShell}
+Today's date: {Today}
 
 # Reference Link
-[Spring AI](https://github.com/spring-projects/spring-ai)
+- https://github.com/spring-projects/spring-ai
+- https://docs.spring.io/spring-ai/reference/index.html
+- https://github.com/spring-ai-community/spring-ai-agent-utils/tree/main
+- https://spring-ai-community.github.io/spring-ai-agent-utils/latest-snapshot

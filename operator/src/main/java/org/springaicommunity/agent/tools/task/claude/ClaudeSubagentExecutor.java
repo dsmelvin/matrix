@@ -17,8 +17,6 @@ package org.springaicommunity.agent.tools.task.claude;
 
 import guru.kumo.operator.service.OperatorService;
 import guru.kumo.operator.util.ColorEnum;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springaicommunity.agent.common.task.subagent.SubagentDefinition;
 import org.springaicommunity.agent.common.task.subagent.SubagentExecutor;
 import org.springaicommunity.agent.common.task.subagent.TaskCall;
@@ -28,8 +26,6 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.core.io.Resource;
 import org.springframework.util.CollectionUtils;
 
@@ -38,9 +34,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 public class ClaudeSubagentExecutor implements SubagentExecutor {
-    private static final Logger logger = LoggerFactory.getLogger(ClaudeSubagentExecutor.class);
-    private final ChatModel chatModel;
-    private final List<ToolCallback> agentTools;
+    private final Integer maxChatMemoryMessages;
     private final List<Resource> skillResources;
     private final OperatorService operatorService;
 
@@ -49,11 +43,10 @@ public class ClaudeSubagentExecutor implements SubagentExecutor {
         return ClaudeSubagentDefinition.KIND;
     }
 
-    public ClaudeSubagentExecutor(ChatModel chatModel, List<ToolCallback> agentTools, List<Resource> skillResources, OperatorService operatorService) {
-        this.chatModel = chatModel;
-        this.agentTools = agentTools;
+    public ClaudeSubagentExecutor(List<Resource> skillResources, OperatorService operatorService, Integer maxChatMemoryMessages) {
         this.skillResources = skillResources;
         this.operatorService = operatorService;
+        this.maxChatMemoryMessages = maxChatMemoryMessages;
     }
 
     @Override
@@ -70,11 +63,11 @@ public class ClaudeSubagentExecutor implements SubagentExecutor {
         SystemMessage systemMessage = SystemMessage.builder().text(claudeSubagent.getContent() + preloadedSkillsSystemSuffix).build();
         UserMessage userMessage = UserMessage.builder().text(taskCall.prompt()).build();
         String conversationId = UUID.randomUUID().toString();
-        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(100).build();
+        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(maxChatMemoryMessages).build();
 
         System.out.printf("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET);
         System.out.printf("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET);
 
-        return operatorService.processCall("[" + taskCall.subagent_type() + "]", chatModel, agentTools, chatMemory, conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
+        return operatorService.processCall("[" + taskCall.subagent_type() + "]", chatMemory, conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
     }
 }

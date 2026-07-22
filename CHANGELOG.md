@@ -1,5 +1,8 @@
 # Change Log for Matrix
 
+## 2026-07-22
+- Add spring-ai-starter-mcp-client and can take Claude Desktop JSON format.
+
 ## 2026-07-21
 - Remove "spring-ai-agent-utils" library dependency  
   "spring-ai-agent-utils" is a good library which has many features learn from Claude Code  

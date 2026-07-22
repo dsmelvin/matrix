@@ -17,8 +17,6 @@ package org.springaicommunity.agent.tools.task.claude;
 
 import guru.kumo.operator.service.OperatorService;
 import org.springaicommunity.agent.common.task.subagent.SubagentType;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.core.io.Resource;
 
 import java.util.List;
@@ -29,18 +27,12 @@ public class ClaudeSubagentType {
     }
 
     public static class Builder {
-        private ChatModel chatModel;
-        private List<ToolCallback> agentTools;
+        private Integer maxChatMemoryMessages;
         private List<Resource> skillResources;
         private OperatorService operatorService;
 
-        public Builder chatModel(ChatModel chatModel) {
-            this.chatModel = chatModel;
-            return this;
-        }
-
-        public Builder agentTools(List<ToolCallback> agentTools) {
-            this.agentTools = agentTools;
+        public Builder maxChatMemoryMessages(Integer maxChatMemoryMessages) {
+            this.maxChatMemoryMessages = maxChatMemoryMessages;
             return this;
         }
 
@@ -55,7 +47,7 @@ public class ClaudeSubagentType {
         }
 
         public SubagentType build() {
-            ClaudeSubagentExecutor executor = new ClaudeSubagentExecutor(chatModel, agentTools, skillResources, operatorService);
+            ClaudeSubagentExecutor executor = new ClaudeSubagentExecutor(skillResources, operatorService, maxChatMemoryMessages);
             return new SubagentType(new ClaudeSubagentResolver(), executor);
         }
     }

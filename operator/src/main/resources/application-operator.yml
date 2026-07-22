@@ -14,6 +14,7 @@ spring:
 
 agent:
   tools: ${AGENT_TOOLS:}
+  mcp-servers-configuration: ${MCP_SERVERS_CONFIGURATION:}
   chat-model:
     max-completion-tokens: ${AGENT_MAX_COMPLETION_TOKEN:}
   message-window-chat-memory:
