@@ -2,6 +2,7 @@ package guru.kumo.operator.command;
 
 import guru.kumo.operator.service.OperatorService;
 import guru.kumo.operator.util.ColorEnum;
+import io.modelcontextprotocol.client.McpSyncClient;
 import lombok.extern.slf4j.Slf4j;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -48,13 +49,16 @@ public class OperatorShellCommand {
     private final String sessionMemoryPathName;
     private final Resource operatorSystemPrompt;
     private final OperatorService operatorService;
+    private final List<McpSyncClient> mcpSyncClients;
 
     OperatorShellCommand(Terminal terminal,
                          OperatorService operatorService,
+                         List<McpSyncClient> mcpSyncClients,
                          @Value("${agent.prompt.system}") String operatorSystemPrompt,
                          @Value("${agent.path.memory}") String sessionMemoryPathName,
                          @Value("${agent.message-window-chat-memory.max-messages}") int maxChatMemoryMessages) {
         this.terminal = terminal;
+        this.mcpSyncClients = mcpSyncClients;
         this.operatorService = operatorService;
         this.conversationId = UUID.randomUUID().toString();
         this.operatorSystemPrompt = new FileSystemResource(operatorSystemPrompt);
@@ -75,6 +79,11 @@ public class OperatorShellCommand {
         terminal.handle(Terminal.Signal.INT, signal -> {
             if (!isTerminating.get()) {
                 isTerminating.set(true);
+                if (mcpSyncClients != null) {
+                    for (McpSyncClient client : mcpSyncClients) {
+                        client.close();
+                    }
+                }
                 saveSessionMemoryFile(saveSessionMemory);
             }
         });
@@ -128,6 +137,11 @@ public class OperatorShellCommand {
             }
         } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException ignored) {
         } finally {
+            if (mcpSyncClients != null) {
+                for (McpSyncClient client : mcpSyncClients) {
+                    client.close();
+                }
+            }
             saveSessionMemoryFile(saveSessionMemory);
         }
         System.out.printf("%sSession Closed.%s%n", ColorEnum.GREEN_BOLD_BRIGHT, ColorEnum.RESET);

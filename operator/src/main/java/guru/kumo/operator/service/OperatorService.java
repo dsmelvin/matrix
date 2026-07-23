@@ -217,6 +217,7 @@ public class OperatorService {
             }
         }
         agentTools.addAll(Arrays.asList(mcpTools.getToolCallbacks()));
+        log.info("Total available agent tools {}.", agentTools.size());
     }
 }
 
