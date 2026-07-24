@@ -1,5 +1,6 @@
 package guru.kumo.operator.service;
 
+import guru.kumo.operator.configuration.CustomMcpConfig;
 import guru.kumo.operator.tool.ImageReaderTool;
 import guru.kumo.operator.tool.TodoUpdateEvent;
 import guru.kumo.operator.tool.TodoWriteTool;
@@ -52,24 +53,30 @@ public class OperatorService {
     private final OpenAiChatModel chatModel;
     private final Integer maxCompletionTokens;
     private final Integer maxChatMemoryMessages;
+    private final CustomMcpConfig customMcpConfig;
     private final ToolCallingManager toolCallingManager;
 
     OperatorService(
-            ToolCallbackProvider mcpTools,
             OpenAiChatModel openAiChatModel,
+            CustomMcpConfig customMcpConfig,
             ApplicationEventPublisher applicationEventPublisher,
             @Value("${agent.tools}") String[] agentToolList,
             @Value("${agent.paths.agents}") List<String> agentPaths,
             @Value("${agent.paths.skills}") List<String> skillPaths,
+            @Value("${agent.mcp-servers-configuration}") String mcpServersConfiguration,
             @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens,
             @Value("${agent.message-window-chat-memory.max-messages}") Integer maxChatMemoryMessages) {
         this.chatModel = openAiChatModel;
+        this.customMcpConfig = customMcpConfig;
         this.maxCompletionTokens = maxCompletionTokens;
         this.maxChatMemoryMessages = maxChatMemoryMessages;
         this.jsonMapper = JsonMapper.builder().build();
         this.toolCallingManager = ToolCallingManager.builder().build();
+        loadTools(applicationEventPublisher, agentToolList, loadSkills(skillPaths), loadAgentTasks(agentPaths), customMcpConfig.customMcpToolCallbackProvider());
+    }
 
-        loadTools(applicationEventPublisher, agentToolList, loadSkills(skillPaths), loadAgentTasks(agentPaths), mcpTools);
+    public void shutdown() {
+        customMcpConfig.destroy();
     }
 
     private ChatOptions getChatOptions() {

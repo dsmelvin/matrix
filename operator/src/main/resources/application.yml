@@ -2,7 +2,6 @@ spring:
   application:
     name: Operator
   main:
-    allow-bean-definition-overriding: true
     banner-mode: OFF
   config:
     use-legacy-processing: false
