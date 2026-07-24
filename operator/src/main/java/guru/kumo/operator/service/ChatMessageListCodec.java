@@ -1,4 +1,4 @@
-package guru.kumo.operator.command;
+package guru.kumo.operator.service;
 
 import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.content.Media; // NOTE: verify this package for your Spring AI version —

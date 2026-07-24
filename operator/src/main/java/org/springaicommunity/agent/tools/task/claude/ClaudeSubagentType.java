@@ -27,14 +27,8 @@ public class ClaudeSubagentType {
     }
 
     public static class Builder {
-        private Integer maxChatMemoryMessages;
         private List<Resource> skillResources;
         private OperatorService operatorService;
-
-        public Builder maxChatMemoryMessages(Integer maxChatMemoryMessages) {
-            this.maxChatMemoryMessages = maxChatMemoryMessages;
-            return this;
-        }
 
         public Builder skillResources(List<Resource> skillResources) {
             this.skillResources = skillResources;
@@ -47,7 +41,7 @@ public class ClaudeSubagentType {
         }
 
         public SubagentType build() {
-            ClaudeSubagentExecutor executor = new ClaudeSubagentExecutor(skillResources, operatorService, maxChatMemoryMessages);
+            ClaudeSubagentExecutor executor = new ClaudeSubagentExecutor(skillResources, operatorService);
             return new SubagentType(new ClaudeSubagentResolver(), executor);
         }
     }

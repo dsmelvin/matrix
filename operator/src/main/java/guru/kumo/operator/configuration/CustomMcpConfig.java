@@ -58,7 +58,19 @@ public class CustomMcpConfig {
     private final static List<McpSyncClient> mcpSyncClientList = new ArrayList<>();
     private final static JsonMapper jsonMapper = new JsonMapper();
 
-    public void destroy() {
+    CustomMcpConfig(@Value("${agent.mcp-servers-configuration}") String mcpServersConfiguration) {
+        try {
+            FileSystemResource resource = new FileSystemResource(new File(mcpServersConfiguration));
+            ClaudeDesktopConfig config = jsonMapper.readValue(resource.getInputStream(), ClaudeDesktopConfig.class);
+            for (var entry : config.mcpServers().entrySet()) {
+                mcpSyncClientList.add(buildClient(entry.getKey(), entry.getValue()));
+            }
+            log.info("Total of {} MCP Server(s)  loaded successfully.", mcpSyncClientList.size());
+        } catch (Exception ignored) {
+        }
+    }
+
+    public void shutdown() {
         for (McpSyncClient client : mcpSyncClientList) {
             try {
                 client.close();
@@ -68,24 +80,8 @@ public class CustomMcpConfig {
         }
     }
 
-    public List<McpSyncClient> getMcpSyncClientList() {
-        return mcpSyncClientList;
-    }
-
     public ToolCallbackProvider customMcpToolCallbackProvider() {
         return SyncMcpToolCallbackProvider.builder().mcpClients(mcpSyncClientList).build();
-    }
-
-    CustomMcpConfig(@Value("${agent.mcp-servers-configuration}") String mcpServersConfiguration) {
-        try {
-            FileSystemResource resource = new FileSystemResource(new File(mcpServersConfiguration));
-            ClaudeDesktopConfig config = jsonMapper.readValue(resource.getInputStream(), ClaudeDesktopConfig.class);
-            for (var entry : config.mcpServers().entrySet()) {
-                mcpSyncClientList.add(buildClient(entry.getKey(), entry.getValue()));
-            }
-        } catch (Exception ex) {
-            log.error("Failed to load configuration file", ex);
-        }
     }
 
     private McpSyncClient buildClient(String name, ServerEntry entry) {

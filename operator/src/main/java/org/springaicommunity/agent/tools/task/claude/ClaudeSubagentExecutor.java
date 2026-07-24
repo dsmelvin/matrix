@@ -22,8 +22,6 @@ import org.springaicommunity.agent.common.task.subagent.SubagentExecutor;
 import org.springaicommunity.agent.common.task.subagent.TaskCall;
 import org.springaicommunity.agent.tools.SkillsTool;
 import org.springaicommunity.agent.utils.Skills;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.core.io.Resource;
@@ -34,7 +32,6 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 public class ClaudeSubagentExecutor implements SubagentExecutor {
-    private final Integer maxChatMemoryMessages;
     private final List<Resource> skillResources;
     private final OperatorService operatorService;
 
@@ -43,10 +40,9 @@ public class ClaudeSubagentExecutor implements SubagentExecutor {
         return ClaudeSubagentDefinition.KIND;
     }
 
-    public ClaudeSubagentExecutor(List<Resource> skillResources, OperatorService operatorService, Integer maxChatMemoryMessages) {
+    public ClaudeSubagentExecutor(List<Resource> skillResources, OperatorService operatorService) {
         this.skillResources = skillResources;
         this.operatorService = operatorService;
-        this.maxChatMemoryMessages = maxChatMemoryMessages;
     }
 
     @Override
@@ -63,11 +59,10 @@ public class ClaudeSubagentExecutor implements SubagentExecutor {
         SystemMessage systemMessage = SystemMessage.builder().text(claudeSubagent.getContent() + preloadedSkillsSystemSuffix).build();
         UserMessage userMessage = UserMessage.builder().text(taskCall.prompt()).build();
         String conversationId = UUID.randomUUID().toString();
-        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(maxChatMemoryMessages).build();
 
         System.out.printf("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET);
         System.out.printf("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET);
 
-        return operatorService.processCall("[" + taskCall.subagent_type() + "]", chatMemory, conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
+        return operatorService.processCall("[" + taskCall.subagent_type() + "]", conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
     }
 }

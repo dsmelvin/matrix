@@ -13,7 +13,6 @@ import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentReferences;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentType;
 import org.springaicommunity.agent.tools.task.repository.DefaultTaskRepository;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -48,70 +47,62 @@ import java.util.List;
 @Profile("operator")
 public class OperatorService {
     private static final ArrayList<ToolCallback> agentTools = new ArrayList<>();
-
+    private final ChatMemoryService chatMemoryService;
     private final JsonMapper jsonMapper;
     private final OpenAiChatModel chatModel;
     private final Integer maxCompletionTokens;
-    private final Integer maxChatMemoryMessages;
     private final CustomMcpConfig customMcpConfig;
     private final ToolCallingManager toolCallingManager;
 
     OperatorService(
             OpenAiChatModel openAiChatModel,
             CustomMcpConfig customMcpConfig,
+            ChatMemoryService chatMemoryService,
             ApplicationEventPublisher applicationEventPublisher,
             @Value("${agent.tools}") String[] agentToolList,
             @Value("${agent.paths.agents}") List<String> agentPaths,
             @Value("${agent.paths.skills}") List<String> skillPaths,
-            @Value("${agent.mcp-servers-configuration}") String mcpServersConfiguration,
-            @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens,
-            @Value("${agent.message-window-chat-memory.max-messages}") Integer maxChatMemoryMessages) {
+            @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens) {
         this.chatModel = openAiChatModel;
+        this.chatMemoryService = chatMemoryService;
         this.customMcpConfig = customMcpConfig;
         this.maxCompletionTokens = maxCompletionTokens;
-        this.maxChatMemoryMessages = maxChatMemoryMessages;
         this.jsonMapper = JsonMapper.builder().build();
         this.toolCallingManager = ToolCallingManager.builder().build();
         loadTools(applicationEventPublisher, agentToolList, loadSkills(skillPaths), loadAgentTasks(agentPaths), customMcpConfig.customMcpToolCallbackProvider());
     }
 
     public void shutdown() {
-        customMcpConfig.destroy();
+        customMcpConfig.shutdown();
     }
 
-    private ChatOptions getChatOptions() {
-        return maxCompletionTokens == null ?
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
-    }
-
-    public ChatResponse processCall(String logPrefix, ChatMemory chatMemory, String conversationId, List<Message> messages) {
-        chatMemory.add(conversationId, messages);
-        Prompt prompt = new Prompt(chatMemory.get(conversationId), getChatOptions());
+    public ChatResponse processCall(String logPrefix, String conversationId, List<Message> messages) {
+        chatMemoryService.addChatMemory(conversationId, messages);
+        Prompt prompt = new Prompt(chatMemoryService.getChatMemory(conversationId), getChatOptions());
         ChatResponse chatResponse = chatModel.call(prompt);
-        chatMemory.add(conversationId, chatResponse.getResult().getOutput());
+        chatMemoryService.addChatMemory(conversationId, chatResponse.getResult().getOutput());
         if (chatResponse.getResult().getOutput().getMetadata().containsKey("reasoningContent")) {
             System.out.printf("%s%s REASONING:[%n%s]%s%n", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET);
         }
         System.out.printf("%s%s ASSISTANT:[%n%s%n]%s%n", ColorEnum.GREEN_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET);
         System.out.printf("%s%s %s%s%n", ColorEnum.GREEN, logPrefix, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET);
         System.out.printf("%s%s %s%s%n%n", ColorEnum.GREEN, logPrefix, chatResponse.getMetadata().getUsage(), ColorEnum.RESET);
-        return processToolCall(logPrefix, chatMemory, conversationId, chatResponse);
+        return processToolCall(logPrefix, conversationId, chatResponse);
     }
 
-    private ChatResponse processToolCall(String logPrefix, ChatMemory chatMemory, String conversationId, ChatResponse chatResponse) {
+    private ChatResponse processToolCall(String logPrefix, String conversationId, ChatResponse chatResponse) {
         while (chatResponse.hasToolCalls()) {
             chatResponse.getResult().getOutput().getToolCalls().forEach(toolCall -> toolCallToString(logPrefix, toolCall));
-            ToolExecutionResult toolExecutionResult = toolCallingManager.executeToolCalls(new Prompt(chatMemory.get(conversationId), getChatOptions()), chatResponse);
+            ToolExecutionResult toolExecutionResult = toolCallingManager.executeToolCalls(new Prompt(chatMemoryService.getChatMemory(conversationId), getChatOptions()), chatResponse);
             ToolResponseMessage toolResponseMessage = (ToolResponseMessage) toolExecutionResult.conversationHistory().getLast();
             toolResponseMessage.getResponses().forEach(toolCallResponse -> toolResponseToString(logPrefix, toolCallResponse));
             if (toolResponseMessage.getResponses().stream().anyMatch(toolResponse -> toolResponse.name().equals(ImageReaderTool.name))) {
                 ArrayList<Message> messageArrayList = new ArrayList<>();
                 messageArrayList.add(toolResponseMessage);
                 messageArrayList.add(decodeAndDescribeImage(toolResponseMessage));
-                chatResponse = processCall(logPrefix, chatMemory, conversationId, messageArrayList);
+                chatResponse = processCall(logPrefix, conversationId, messageArrayList);
             } else {
-                chatResponse = processCall(logPrefix, chatMemory, conversationId, List.of(toolResponseMessage));
+                chatResponse = processCall(logPrefix, conversationId, List.of(toolResponseMessage));
             }
         }
         return chatResponse;
@@ -178,7 +169,7 @@ public class OperatorService {
                     if (!agentTasksResources.isEmpty()) {
                         agentTools.add(TaskTool.builder().taskRepository(new DefaultTaskRepository())
                                 .subagentReferences(ClaudeSubagentReferences.fromResources(agentTasksResources))
-                                .subagentTypes(ClaudeSubagentType.builder().skillResources(skillResources).operatorService(this).maxChatMemoryMessages(maxChatMemoryMessages).build()).build());
+                                .subagentTypes(ClaudeSubagentType.builder().skillResources(skillResources).operatorService(this).build()).build());
                         log.info("TaskTool loaded successfully");
                     }
                 }
@@ -224,7 +215,13 @@ public class OperatorService {
             }
         }
         agentTools.addAll(Arrays.asList(mcpTools.getToolCallbacks()));
-        log.info("Total available agent tools {}.", agentTools.size());
+        log.info("Total of {} agent tool(s) loaded successfully.", agentTools.size());
+    }
+
+    private ChatOptions getChatOptions() {
+        return maxCompletionTokens == null ?
+                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
+                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
     }
 }
 
