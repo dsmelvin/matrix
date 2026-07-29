@@ -15,7 +15,7 @@
  */
 package org.springaicommunity.agent.tools.task.claude;
 
-import guru.kumo.operator.service.OperatorService;
+import guru.kumo.operator.service.AgentOperatorService;
 import org.springaicommunity.agent.common.task.subagent.SubagentType;
 import org.springframework.core.io.Resource;
 
@@ -28,20 +28,20 @@ public class ClaudeSubagentType {
 
     public static class Builder {
         private List<Resource> skillResources;
-        private OperatorService operatorService;
+        private AgentOperatorService agentOperatorService;
 
         public Builder skillResources(List<Resource> skillResources) {
             this.skillResources = skillResources;
             return this;
         }
 
-        public Builder operatorService(OperatorService operatorService) {
-            this.operatorService = operatorService;
+        public Builder operatorService(AgentOperatorService agentOperatorService) {
+            this.agentOperatorService = agentOperatorService;
             return this;
         }
 
         public SubagentType build() {
-            ClaudeSubagentExecutor executor = new ClaudeSubagentExecutor(skillResources, operatorService);
+            ClaudeSubagentExecutor executor = new ClaudeSubagentExecutor(skillResources, agentOperatorService);
             return new SubagentType(new ClaudeSubagentResolver(), executor);
         }
     }

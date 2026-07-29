@@ -19,10 +19,15 @@ agent:
     max-completion-tokens: ${AGENT_MAX_COMPLETION_TOKEN:}
   message-window-chat-memory:
     max-messages: ${AGENT_MAX_MESSAGE:500}
-  prompt:
-    system: ${AGENT_PROMPT_SYSTEM:}
   path:
     memory: ${AGENT_PATH_MEMORY:}
   paths:
     agents: ${AGENT_PATHS_AGENTS:}
     skills: ${AGENT_PATHS_SKILLS:}
+  channel:
+    telegram:
+      token: ${CHANNEL_TELEGRAM_TOKEN:}
+      userId: ${CHANNEL_TELEGRAM_USER_ID:}
+    discord:
+      token: ${CHANNEL_DISCORD_TOKEN:}
+      channelId: ${CHANNEL_DISCORD_CHANNEL_ID:}

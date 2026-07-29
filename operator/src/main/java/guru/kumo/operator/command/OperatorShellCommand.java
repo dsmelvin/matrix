@@ -1,15 +1,15 @@
 package guru.kumo.operator.command;
 
-import guru.kumo.operator.service.ChatMemoryService;
-import guru.kumo.operator.service.OperatorService;
-import guru.kumo.operator.util.ColorEnum;
+import guru.kumo.operator.service.AgentOperatorService;
+import guru.kumo.operator.service.ChatMessageListCodec;
 import lombok.extern.slf4j.Slf4j;
-import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
-import org.jline.terminal.Terminal;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.shell.core.command.annotation.Option;
 import org.springframework.stereotype.Component;
@@ -19,118 +19,109 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
 
 @Slf4j
 @Component
 @Profile("operator")
 public class OperatorShellCommand {
-    private final Terminal terminal;
-    private final String conversationId;
-    private final SystemMessage systemMessage;
-    private final OperatorService operatorService;
-    private final ChatMemoryService chatMemoryService;
+    public static final String conversationId = UUID.randomUUID().toString();
 
-    OperatorShellCommand(Terminal terminal, OperatorService operatorService, ChatMemoryService chatMemoryService) {
-        this.terminal = terminal;
-        this.operatorService = operatorService;
-        this.chatMemoryService = chatMemoryService;
-        this.conversationId = UUID.randomUUID().toString();
-        this.systemMessage = chatMemoryService.loadSystemPrompt(conversationId);
+    private static final ChatMessageListCodec chatMessageListCodec = new ChatMessageListCodec();
+
+    private final String sessionMemoryPathName;
+    private final AgentOperatorService agentOperatorService;
+
+    OperatorShellCommand(AgentOperatorService agentOperatorService, @Value("${agent.path.memory}") String sessionMemoryPathName) {
+        this.sessionMemoryPathName = sessionMemoryPathName;
+        this.agentOperatorService = agentOperatorService;
     }
 
     @Command(name = {"operator"})
     public void run(
-            @Option(longName = "prompt-file", shortName = 'p', required = false, description = "To preload a prompt file")
-            String promptFileName,
+            @Option(longName = "system-prompt-file", shortName = 's', required = false, description = "To preload a system prompt file")
+            String systemPromptFileName,
+            @Option(longName = "user-prompt-file", shortName = 'u', required = false, description = "To preload a user prompt file")
+            String userPromptFileName,
             @Option(longName = "session-memory-file", shortName = 'm', required = false, description = "The history of chat memory file")
-            String savedSessionMemoryFileName,
-            @Option(longName = "save-session-memory", shortName = 's', required = false, description = "flag of storing session memory into a file")
-            boolean saveSessionMemory) {
-        AtomicBoolean isTerminating = new AtomicBoolean(false);
-        terminal.handle(Terminal.Signal.INT, signal -> {
-            if (!isTerminating.get()) {
-                isTerminating.set(true);
-                chatMemoryService.shutdown(conversationId, saveSessionMemory);
-                operatorService.shutdown();
-            }
-        });
-
-        try {
-            chatMemoryService.loadSavedSessionMemoryFile(conversationId, savedSessionMemoryFileName);
-            loadPromptFile(promptFileName);
-            LineReader reader = LineReaderBuilder.builder().terminal(terminal).build();
-            StringBuilder buffer = new StringBuilder();
-            boolean collecting = false;
-            while (!isTerminating.get()) {
-                discardPendingInput();
-                System.out.printf("%s", ColorEnum.BLUE_BOLD_BRIGHT);
-                String nextLine = reader.readLine(collecting ? "" : String.format("%nWaiting for input, type an empty line to finish:%n"));
-                if (nextLine == null) break; // EOF (e.g. Ctrl+D)
-                String trimmed = nextLine.trim();
-                if (!collecting) {
-                    if (trimmed.isEmpty()) continue;
-                    // Start collecting a new (possibly multi-line) message
-                    buffer.setLength(0);
-                    buffer.append(trimmed.stripLeading());
-                    collecting = true;
-                } else {
-                    if (trimmed.isEmpty()) {
-                        System.out.printf("%sProcessing ...%s%n", ColorEnum.GREEN_BOLD_BRIGHT, ColorEnum.RESET);
-                        // Blank line = end of message, send it
-                        try {
-                            UserMessage userMessage = UserMessage.builder().text(buffer.toString()).build();
-                            System.out.printf("%s[PREFILL][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, userMessage.getText(), ColorEnum.RESET);
-                            operatorService.processCall("[OPERATOR]", conversationId, List.of(userMessage));
-                        } catch (Exception e) {
-                            if (log.isDebugEnabled()) {
-                                log.error("Failed to process chat message", e);
-                            } else {
-                                log.error("Failed to process chat message: {}", e.getMessage());
-                            }
-                        }
-                        collecting = false;
-                    } else {
-                        // Keep appending lines to the current message
-                        buffer.append(System.lineSeparator()).append(nextLine);
-                    }
-                }
-            }
-        } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException ignored) {
-        } finally {
-            chatMemoryService.shutdown(conversationId, saveSessionMemory);
-            operatorService.shutdown();
-        }
-        System.out.printf("%sSession Closed.%s%n", ColorEnum.GREEN_BOLD_BRIGHT, ColorEnum.RESET);
+            String savedSessionMemoryFileName) {
+        ArrayList<Message> messageArrayList = new ArrayList<>();
+        Optional.ofNullable(loadSavedSessionMemoryFile(savedSessionMemoryFileName)).ifPresent(messageArrayList::addAll);
+        Optional.ofNullable(loadPromptFile(userPromptFileName)).ifPresent(messageArrayList::add);
+        agentOperatorService.sendPrefillMessage(conversationId, loadSystemPrompt(systemPromptFileName), messageArrayList);
     }
 
-    private void loadPromptFile(String promptFileName) {
+    private List<Message> loadSavedSessionMemoryFile(String savedSessionMemoryFileName) {
         try {
-            if (promptFileName == null) return;
-            File promptFile = new File(promptFileName);
-            if (promptFile.exists()) {
-                try (FileInputStream fileInputStream = new FileInputStream(promptFile)) {
-                    log.info("Prompt file loaded successfully. {}", promptFile.getAbsolutePath());
-                    UserMessage userMessage = UserMessage.builder().text(StreamUtils.copyToString(fileInputStream, StandardCharsets.UTF_8)).build();
-                    System.out.printf("%s[PREFILL][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, userMessage.getText(), ColorEnum.RESET);
-                    operatorService.processCall("[OPERATOR]", conversationId, List.of(userMessage));
+            if (savedSessionMemoryFileName == null) return null;
+            File savedSessionMemoryFile = new File(savedSessionMemoryFileName);
+            if (savedSessionMemoryFile.exists()) {
+                try (FileInputStream fileInputStream = new FileInputStream(savedSessionMemoryFile)) {
+                    List<Message> messageList = chatMessageListCodec.deserialize(StreamUtils.copyToString(fileInputStream, StandardCharsets.UTF_8));
+                    log.info("Session memory loaded successfully.");
+                    return messageList;
                 }
+            } else {
+                log.error("Session memory doesn't exist. {}", savedSessionMemoryFileName);
+                return null;
             }
         } catch (IOException e) {
-            log.error("Error reading Prompt file", e);
+            log.error("Error reading session memory file", e);
             throw new RuntimeException(e);
         }
     }
 
-    private void discardPendingInput() {
+    private SystemMessage loadSystemPrompt(String systemPromptFileName) {
         try {
-            int available = System.in.available();
-            if (available > 0) {
-                System.in.read(new byte[available]);
+            if (systemPromptFileName == null) return null;
+            FileSystemResource operatorSystemPrompt = new FileSystemResource(systemPromptFileName);
+            if (operatorSystemPrompt.exists() && operatorSystemPrompt.isFile()) {
+                String workingDirectory = System.getProperty("user.dir");
+                String platform = System.getProperty("os.name").toLowerCase();
+                String osVersion = System.getProperty("os.name") + " " + System.getProperty("os.version");
+                String todayDate = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
+
+                HashMap<String, Object> systemPromptEnvMap = new HashMap<>();
+                systemPromptEnvMap.put("WorkingDirectory", workingDirectory);
+                systemPromptEnvMap.put("Platform", platform);
+                systemPromptEnvMap.put("OSVersion", osVersion);
+                systemPromptEnvMap.put("Today", todayDate);
+                systemPromptEnvMap.put("MEMORIES_ROOT_DIERCTORY", sessionMemoryPathName == null ? "NONE" : sessionMemoryPathName);
+                systemPromptEnvMap.put("OSShell", System.getenv("SHELL") == null ? "UNKNOWN" : System.getenv("SHELL"));
+
+                PromptTemplate systemTemplate = new PromptTemplate(operatorSystemPrompt);
+                log.info("System Message Environment Variables: {}", systemPromptEnvMap);
+                SystemMessage systemMessage = SystemMessage.builder().text(systemTemplate.render(systemPromptEnvMap)).build();
+                log.info("System Message loaded successfully");
+                return systemMessage;
+            } else {
+                log.error("System prompt file doesn't exist. {}", systemPromptFileName);
+                return null;
             }
-        } catch (IOException ignored) {
+        } catch (Exception e) {
+            log.error("Error reading system prompt file", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    private UserMessage loadPromptFile(String userPromptFileName) {
+        try {
+            if (userPromptFileName == null) return null;
+            File promptFile = new File(userPromptFileName);
+            if (promptFile.exists()) {
+                try (FileInputStream fileInputStream = new FileInputStream(promptFile)) {
+                    log.info("Prompt file loaded successfully. {}", promptFile.getAbsolutePath());
+                    return UserMessage.builder().text(StreamUtils.copyToString(fileInputStream, StandardCharsets.UTF_8)).build();
+                }
+            } else {
+                log.error("User prompt file doesn't exist. {}", userPromptFileName);
+                return null;
+            }
+        } catch (IOException e) {
+            log.error("Error reading user prompt file", e);
+            throw new RuntimeException(e);
         }
     }
 }

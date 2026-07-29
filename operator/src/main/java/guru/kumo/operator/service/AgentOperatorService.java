@@ -1,26 +1,28 @@
 package guru.kumo.operator.service;
 
+import guru.kumo.operator.channel.model.AgentResponse;
 import guru.kumo.operator.configuration.CustomMcpConfig;
 import guru.kumo.operator.tool.ImageReaderTool;
-import guru.kumo.operator.tool.TodoUpdateEvent;
 import guru.kumo.operator.tool.TodoWriteTool;
-import guru.kumo.operator.util.ColorEnum;
 import guru.kumo.operator.util.Utils;
 import lombok.extern.slf4j.Slf4j;
+import org.springaicommunity.agent.common.task.subagent.TaskCall;
 import org.springaicommunity.agent.tools.*;
 import org.springaicommunity.agent.tools.task.TaskTool;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentReferences;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentType;
 import org.springaicommunity.agent.tools.task.repository.DefaultTaskRepository;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -28,14 +30,15 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
-import tools.jackson.databind.json.JsonMapper;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
+import reactor.util.concurrent.Queues;
 
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -45,35 +48,61 @@ import java.util.List;
 @Slf4j
 @Service
 @Profile("operator")
-public class OperatorService {
+public class AgentOperatorService {
     private static final ArrayList<ToolCallback> agentTools = new ArrayList<>();
-    private final ChatMemoryService chatMemoryService;
-    private final JsonMapper jsonMapper;
-    private final OpenAiChatModel chatModel;
+    private static final Sinks.Many<AgentResponse> sink = Sinks.many().multicast().onBackpressureBuffer(Queues.SMALL_BUFFER_SIZE, false);
+
+    private final ChatModel chatModel;
     private final Integer maxCompletionTokens;
     private final CustomMcpConfig customMcpConfig;
+    private final ChatMemoryService chatMemoryService;
     private final ToolCallingManager toolCallingManager;
 
-    OperatorService(
-            OpenAiChatModel openAiChatModel,
+    AgentOperatorService(
+            ChatModel chatModel,
             CustomMcpConfig customMcpConfig,
             ChatMemoryService chatMemoryService,
-            ApplicationEventPublisher applicationEventPublisher,
             @Value("${agent.tools}") String[] agentToolList,
             @Value("${agent.paths.agents}") List<String> agentPaths,
             @Value("${agent.paths.skills}") List<String> skillPaths,
             @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens) {
-        this.chatModel = openAiChatModel;
+        this.chatModel = chatModel;
         this.chatMemoryService = chatMemoryService;
         this.customMcpConfig = customMcpConfig;
         this.maxCompletionTokens = maxCompletionTokens;
-        this.jsonMapper = JsonMapper.builder().build();
         this.toolCallingManager = ToolCallingManager.builder().build();
-        loadTools(applicationEventPublisher, agentToolList, loadSkills(skillPaths), loadAgentTasks(agentPaths), customMcpConfig.customMcpToolCallbackProvider());
+        loadTools(agentToolList, loadSkills(skillPaths), loadAgentTasks(agentPaths), customMcpConfig.customMcpToolCallbackProvider());
+    }
+
+    public Flux<AgentResponse> subscribe() {
+        return sink.asFlux();
+    }
+
+    public void complete() {
+        sink.tryEmitComplete();
     }
 
     public void shutdown() {
+        complete();
         customMcpConfig.shutdown();
+    }
+
+    public void sendPrefillMessage(String conversationId, SystemMessage systemMessage, ArrayList<Message> messageList) {
+        if (systemMessage != null) publish(new AgentResponse(List.of(systemMessage)));
+        if (messageList.isEmpty()) {
+            if (systemMessage != null) chatMemoryService.addChatMemory(conversationId, systemMessage);
+            return;
+        }
+        publish(new AgentResponse(messageList));
+
+        messageList.addFirst(systemMessage);
+        processCall("[OPERATOR]", conversationId, messageList);
+    }
+
+    public String startSubAgent(String conversationId, TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
+        publish(new AgentResponse(taskCall, systemMessage, userMessage));
+        ChatResponse chatResponse = processCall("[" + taskCall.subagent_type() + "]", conversationId, List.of(systemMessage, userMessage));
+        return chatResponse.getResult().getOutput().getText();
     }
 
     public ChatResponse processCall(String logPrefix, String conversationId, List<Message> messages) {
@@ -81,21 +110,16 @@ public class OperatorService {
         Prompt prompt = new Prompt(chatMemoryService.getChatMemory(conversationId), getChatOptions());
         ChatResponse chatResponse = chatModel.call(prompt);
         chatMemoryService.addChatMemory(conversationId, chatResponse.getResult().getOutput());
-        if (chatResponse.getResult().getOutput().getMetadata().containsKey("reasoningContent")) {
-            System.out.printf("%s%s REASONING:[%n%s]%s%n", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET);
-        }
-        System.out.printf("%s%s ASSISTANT:[%n%s%n]%s%n", ColorEnum.GREEN_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET);
-        System.out.printf("%s%s %s%s%n", ColorEnum.GREEN, logPrefix, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET);
-        System.out.printf("%s%s %s%s%n%n", ColorEnum.GREEN, logPrefix, chatResponse.getMetadata().getUsage(), ColorEnum.RESET);
+        publish(new AgentResponse(logPrefix, chatResponse));
         return processToolCall(logPrefix, conversationId, chatResponse);
     }
 
     private ChatResponse processToolCall(String logPrefix, String conversationId, ChatResponse chatResponse) {
         while (chatResponse.hasToolCalls()) {
-            chatResponse.getResult().getOutput().getToolCalls().forEach(toolCall -> toolCallToString(logPrefix, toolCall));
+            chatResponse.getResult().getOutput().getToolCalls().forEach(toolCall -> publish(new AgentResponse(logPrefix, toolCall)));
             ToolExecutionResult toolExecutionResult = toolCallingManager.executeToolCalls(new Prompt(chatMemoryService.getChatMemory(conversationId), getChatOptions()), chatResponse);
             ToolResponseMessage toolResponseMessage = (ToolResponseMessage) toolExecutionResult.conversationHistory().getLast();
-            toolResponseMessage.getResponses().forEach(toolCallResponse -> toolResponseToString(logPrefix, toolCallResponse));
+            toolResponseMessage.getResponses().forEach(toolCallResponse -> publish(new AgentResponse(logPrefix, toolCallResponse)));
             if (toolResponseMessage.getResponses().stream().anyMatch(toolResponse -> toolResponse.name().equals(ImageReaderTool.name))) {
                 ArrayList<Message> messageArrayList = new ArrayList<>();
                 messageArrayList.add(toolResponseMessage);
@@ -106,14 +130,6 @@ public class OperatorService {
             }
         }
         return chatResponse;
-    }
-
-    private void toolCallToString(String logPrefix, AssistantMessage.ToolCall toolCall) {
-        System.out.println(ColorEnum.CYAN + String.format("%s TollCall[id=%s, type=%s, name=%s, arguments={%s}]", logPrefix, toolCall.id(), toolCall.type(), toolCall.name(), toolCall.arguments().substring(0, Math.min(132, toolCall.arguments().length()))) + ColorEnum.RESET);
-    }
-
-    private void toolResponseToString(String logPrefix, ToolResponseMessage.ToolResponse toolResponse) {
-        System.out.println(ColorEnum.MAGENTA + String.format("%s ToolResponse[id=%s, name=%s, responseData=%s]", logPrefix, toolResponse.id(), toolResponse.name(), toolResponse.responseData().substring(0, Math.min(132, toolResponse.responseData().length()))) + ColorEnum.RESET);
     }
 
     private Message decodeAndDescribeImage(ToolResponseMessage toolResponseMessage) {
@@ -135,6 +151,22 @@ public class OperatorService {
             }
         }
         return message;
+    }
+
+    private void publish(AgentResponse agentResponse) {
+        Sinks.EmitResult result = sink.tryEmitNext(agentResponse);
+
+        if (result.isFailure()) {
+            // Handle failure explicitly instead of silently dropping
+            switch (result) {
+                case FAIL_OVERFLOW -> System.err.println("Buffer overflow, dropping: " + agentResponse);
+                case FAIL_NON_SERIALIZED -> {
+                    // Not thread-safe by default; retry with emit() + a retry strategy
+                    sink.emitNext(agentResponse, Sinks.EmitFailureHandler.busyLooping(java.time.Duration.ofMillis(100)));
+                }
+                default -> System.err.println("Emit failed: " + result + " for " + agentResponse);
+            }
+        }
     }
 
     private List<Resource> loadSkills(List<String> skillPaths) {
@@ -161,8 +193,7 @@ public class OperatorService {
         return agentTasksResources;
     }
 
-    private void loadTools(ApplicationEventPublisher applicationEventPublisher, String[] agentToolList,
-                           List<Resource> skillResources, List<Resource> agentTasksResources, ToolCallbackProvider mcpTools) {
+    private void loadTools(String[] agentToolList, List<Resource> skillResources, List<Resource> agentTasksResources, ToolCallbackProvider mcpTools) {
         for (String at : agentToolList) {
             switch (at) {
                 case "TaskTool" -> {
@@ -179,6 +210,12 @@ public class OperatorService {
                         log.info("SkillTool loaded successfully");
                     }
                 }
+                case "TodoWriteTool" -> {
+                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder()
+                            .toolObjects(TodoWriteTool.builder().todoEventHandler(todos -> publish(new AgentResponse(todos))).build())
+                            .build().getToolCallbacks()));
+                    log.info("TodoWriteTool loaded successfully");
+                }
                 case "ImageReaderTool" -> {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(ImageReaderTool.builder().build()).build().getToolCallbacks()));
                     log.info("ImageReaderTool loaded successfully");
@@ -191,26 +228,21 @@ public class OperatorService {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(GlobTool.builder().build()).build().getToolCallbacks()));
                     log.info("GlobTool loaded successfully");
                 }
-                case "ShellTools" -> {
-                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(ShellTools.builder().build()).build().getToolCallbacks()));
-                    log.info("ShellTools loaded successfully");
+                case "ListDirectoryTool" -> {
+                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(ListDirectoryTool.builder().build()).build().getToolCallbacks()));
+                    log.info("ListDirectoryTool loaded successfully");
                 }
                 case "FileSystemTools" -> {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(FileSystemTools.builder().build()).build().getToolCallbacks()));
                     log.info("FileSystemTools loaded successfully");
                 }
-                case "ListDirectoryTool" -> {
-                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(ListDirectoryTool.builder().build()).build().getToolCallbacks()));
-                    log.info("ListDirectoryTool loaded successfully");
-                }
                 case "SmartWebFetchTool" -> {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(SmartWebFetchTool.builder(ChatClient.create(chatModel)).build()).build().getToolCallbacks()));
                     log.info("SmartWebFetchTool loaded successfully");
                 }
-                case "TodoWriteTool" -> {
-                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder()
-                            .toolObjects(TodoWriteTool.builder().todoEventHandler(event -> applicationEventPublisher.publishEvent(new TodoUpdateEvent(this, event.todos()))).build()).build().getToolCallbacks()));
-                    log.info("TodoWriteTool loaded successfully");
+                case "ShellTools" -> {
+                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(ShellTools.builder().build()).build().getToolCallbacks()));
+                    log.info("ShellTools loaded successfully");
                 }
             }
         }
@@ -219,9 +251,13 @@ public class OperatorService {
     }
 
     private ChatOptions getChatOptions() {
-        return maxCompletionTokens == null ?
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
-                chatModel.getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
+        if (chatModel instanceof OpenAiChatModel) {
+            return maxCompletionTokens == null ?
+                    ((OpenAiChatModel) chatModel).getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
+                    ((OpenAiChatModel) chatModel).getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
+        } else {
+            return ((ToolCallingChatOptions) chatModel.getOptions()).mutate().toolCallbacks(agentTools).build();
+        }
     }
 }
 

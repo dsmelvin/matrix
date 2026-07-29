@@ -1,5 +1,9 @@
 # Change Log for Matrix
 
+## 202-08-01
+- Add [Discord channel](https://docs.discord4j.com) and [Telegram channel](https://rubenlagus.github.io/TelegramBotsDocumentation/getting-started.html)
+  All channels are sharing the same conversation id and response for now. May change later.
+
 ## 2026-07-23
 - Add Docker environment
 

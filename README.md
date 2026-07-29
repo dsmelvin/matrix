@@ -18,9 +18,9 @@ cp dot.env .env # replace the variables whatever works for you.
 ```yaml
 ./scripts/run.sh 
 ./scripts/run.sh help
-./scripts/run.sh -s
+./scripts/run.sh -s prompt/OPERATOR_SYSTEM_PROMPT_V0.md
+./scripts/run.sh -u prompt/tetris-game.txt
 ./scripts/run.sh -m {agent.path.memory}/session-memory-2026-07-09_00-00-00.json
-./scripts/run.sh -p prompt/tetris-game.txt
 ```
 
 ### SkillsJars:

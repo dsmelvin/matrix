@@ -15,8 +15,7 @@
  */
 package org.springaicommunity.agent.tools.task.claude;
 
-import guru.kumo.operator.service.OperatorService;
-import guru.kumo.operator.util.ColorEnum;
+import guru.kumo.operator.service.AgentOperatorService;
 import org.springaicommunity.agent.common.task.subagent.SubagentDefinition;
 import org.springaicommunity.agent.common.task.subagent.SubagentExecutor;
 import org.springaicommunity.agent.common.task.subagent.TaskCall;
@@ -33,16 +32,16 @@ import java.util.stream.Collectors;
 
 public class ClaudeSubagentExecutor implements SubagentExecutor {
     private final List<Resource> skillResources;
-    private final OperatorService operatorService;
+    private final AgentOperatorService agentOperatorService;
 
     @Override
     public String getKind() {
         return ClaudeSubagentDefinition.KIND;
     }
 
-    public ClaudeSubagentExecutor(List<Resource> skillResources, OperatorService operatorService) {
+    public ClaudeSubagentExecutor(List<Resource> skillResources, AgentOperatorService agentOperatorService) {
         this.skillResources = skillResources;
-        this.operatorService = operatorService;
+        this.agentOperatorService = agentOperatorService;
     }
 
     @Override
@@ -55,14 +54,9 @@ public class ClaudeSubagentExecutor implements SubagentExecutor {
                     .map(skill -> "%s\nBase directory for this skill: %s\n\n%s".formatted(skill.toXml(),
                             skill.basePath(), skill.content())).collect(Collectors.joining("\n\n"));
         }
-
         SystemMessage systemMessage = SystemMessage.builder().text(claudeSubagent.getContent() + preloadedSkillsSystemSuffix).build();
         UserMessage userMessage = UserMessage.builder().text(taskCall.prompt()).build();
         String conversationId = UUID.randomUUID().toString();
-
-        System.out.printf("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET);
-        System.out.printf("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET);
-
-        return operatorService.processCall("[" + taskCall.subagent_type() + "]", conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
+        return agentOperatorService.startSubAgent(conversationId, taskCall, systemMessage, userMessage);
     }
 }

@@ -9,6 +9,7 @@
     <name>Parent POM</name>
     <description>Parent POM for guru.kumo modules</description>
     <properties>
+        <discord4j-core.version>3.3.2</discord4j-core.version>
         <flexmark.version>0.64.8</flexmark.version>
         <java.version>25</java.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
@@ -22,6 +23,7 @@
         <spring-ai.version>2.0.0</spring-ai.version>
         <spring-boot-dependencies.version>4.1.0</spring-boot-dependencies.version>
         <spring-shell.version>4.0.3</spring-shell.version>
+        <telegrambots.version>10.1.1</telegrambots.version>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -47,6 +49,11 @@
                 <scope>import</scope>
             </dependency>
             <dependency>
+                <groupId>com.discord4j</groupId>
+                <artifactId>discord4j-core</artifactId>
+                <version>${discord4j-core.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.vladsch.flexmark</groupId>
                 <artifactId>flexmark-html2md-converter</artifactId>
                 <version>${flexmark.version}</version>
@@ -55,6 +62,16 @@
                 <groupId>org.springaicommunity</groupId>
                 <artifactId>spring-ai-agent-utils</artifactId>
                 <version>${spring-ai-agent-utils.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.telegram</groupId>
+                <artifactId>telegrambots-client</artifactId>
+                <version>${telegrambots.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.telegram</groupId>
+                <artifactId>telegrambots-springboot-longpolling-starter</artifactId>
+                <version>${telegrambots.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
