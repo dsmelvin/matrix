@@ -1,5 +1,9 @@
 # Change Log for Matrix
 
+## 202-08-02
+- Upgrade Spring AI 2.0.1
+- Add Google Gen AI models
+
 ## 202-08-01
 - Add [Discord channel](https://docs.discord4j.com) and [Telegram channel](https://rubenlagus.github.io/TelegramBotsDocumentation/getting-started.html)
   All channels are sharing the same conversation id and response for now. May change later.

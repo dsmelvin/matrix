@@ -20,7 +20,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <sortpom-maven-plugin.version>4.0.1</sortpom-maven-plugin.version>
         <spring-ai-agent-utils.version>0.10.0</spring-ai-agent-utils.version>
-        <spring-ai.version>2.0.0</spring-ai.version>
+        <spring-ai.version>2.0.1-SNAPSHOT</spring-ai.version>
         <spring-boot-dependencies.version>4.1.0</spring-boot-dependencies.version>
         <spring-shell.version>4.0.3</spring-shell.version>
         <telegrambots.version>10.1.1</telegrambots.version>
@@ -75,6 +75,27 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+    <repositories>
+        <repository>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <id>spring-snapshots</id>
+            <name>Spring Snapshots</name>
+            <url>https://repo.spring.io/snapshot</url>
+        </repository>
+        <repository>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+            <id>central-portal-snapshots</id>
+            <name>Central Portal Snapshots</name>
+            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        </repository>
+    </repositories>
     <build>
         <pluginManagement>
             <plugins>

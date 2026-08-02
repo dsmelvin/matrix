@@ -19,6 +19,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
+import org.springframework.ai.image.ImageModel;
+import org.springframework.ai.image.ImagePrompt;
+import org.springframework.ai.image.ImageResponse;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
@@ -26,6 +29,7 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
@@ -50,6 +54,7 @@ public class AgentOperatorService {
     private static final Sinks.Many<AgentResponse> sink = Sinks.many().multicast().onBackpressureBuffer(Queues.SMALL_BUFFER_SIZE, false);
 
     private final ChatModel chatModel;
+    private final ImageModel imageModel;
     private final Integer maxCompletionTokens;
     private final CustomMcpConfig customMcpConfig;
     private final ChatMemoryService chatMemoryService;
@@ -60,10 +65,12 @@ public class AgentOperatorService {
             CustomMcpConfig customMcpConfig,
             ChatMemoryService chatMemoryService,
             @Value("${agent.tools}") String[] agentToolList,
+            @Autowired(required = false) ImageModel imageModel,
             @Value("${agent.paths.agents}") List<String> agentPaths,
             @Value("${agent.paths.skills}") List<String> skillPaths,
             @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens) {
         this.chatModel = chatModel;
+        this.imageModel = imageModel;
         this.chatMemoryService = chatMemoryService;
         this.customMcpConfig = customMcpConfig;
         this.maxCompletionTokens = maxCompletionTokens;
@@ -97,6 +104,13 @@ public class AgentOperatorService {
         publish(new AgentResponse(taskCall, systemMessage, userMessage));
         ChatResponse chatResponse = processCall("[" + taskCall.subagent_type() + "]", conversationId, List.of(systemMessage, userMessage));
         return chatResponse.getResult().getOutput().getText();
+    }
+
+    public ImageResponse callImageModel(String prompt) {
+        if (imageModel != null) {
+            return imageModel.call(new ImagePrompt(prompt));
+        }
+        return null;
     }
 
     public ChatResponse processCall(String logPrefix, String conversationId, List<Message> messages) {

@@ -1,7 +1,8 @@
 spring:
   ai:
     model:
-      chat: ${AI_MODEL:openai}
+      chat: ${AI_MODEL_CHAT:openai}
+      image: ${AI_MODEL_IMAGE:}
     chat:
       observations:
         log-prompt: false
