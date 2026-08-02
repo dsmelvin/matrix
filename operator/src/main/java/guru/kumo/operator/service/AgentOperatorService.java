@@ -13,10 +13,7 @@ import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentReferences;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentType;
 import org.springaicommunity.agent.tools.task.repository.DefaultTaskRepository;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.ToolResponseMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
@@ -87,16 +84,13 @@ public class AgentOperatorService {
         customMcpConfig.shutdown();
     }
 
-    public void sendPrefillMessage(String conversationId, SystemMessage systemMessage, ArrayList<Message> messageList) {
-        if (systemMessage != null) publish(new AgentResponse(List.of(systemMessage)));
-        if (messageList.isEmpty()) {
-            if (systemMessage != null) chatMemoryService.addChatMemory(conversationId, systemMessage);
-            return;
-        }
+    public void sendPrefillMessage(String conversationId, ArrayList<Message> messageList) {
         publish(new AgentResponse(messageList));
-
-        messageList.addFirst(systemMessage);
-        processCall("[OPERATOR]", conversationId, messageList);
+        if (messageList.stream().anyMatch(message -> message.getMessageType() == MessageType.USER)) {
+            processCall("[OPERATOR]", conversationId, messageList);
+        } else {
+            chatMemoryService.addChatMemory(conversationId, messageList);
+        }
     }
 
     public String startSubAgent(String conversationId, TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {

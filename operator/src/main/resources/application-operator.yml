@@ -1,5 +1,7 @@
 spring:
   ai:
+    model:
+      chat: ${AI_MODEL:openai}
     chat:
       observations:
         log-prompt: false
@@ -11,7 +13,6 @@ spring:
       api-key: ${INFERENCE_API_KEY:}
       chat:
         model: ${INFERENCE_MODEL:}
-
 agent:
   tools: ${AGENT_TOOLS:}
   mcp-servers-configuration: ${MCP_SERVERS_CONFIGURATION:}

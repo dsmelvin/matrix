@@ -48,9 +48,10 @@ public class OperatorShellCommand {
             @Option(longName = "session-memory-file", shortName = 'm', required = false, description = "The history of chat memory file")
             String savedSessionMemoryFileName) {
         ArrayList<Message> messageArrayList = new ArrayList<>();
+        Optional.ofNullable(loadSystemPrompt(systemPromptFileName)).ifPresent(messageArrayList::add);
         Optional.ofNullable(loadSavedSessionMemoryFile(savedSessionMemoryFileName)).ifPresent(messageArrayList::addAll);
         Optional.ofNullable(loadPromptFile(userPromptFileName)).ifPresent(messageArrayList::add);
-        agentOperatorService.sendPrefillMessage(conversationId, loadSystemPrompt(systemPromptFileName), messageArrayList);
+        agentOperatorService.sendPrefillMessage(conversationId,  messageArrayList);
     }
 
     private List<Message> loadSavedSessionMemoryFile(String savedSessionMemoryFileName) {
