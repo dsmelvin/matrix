@@ -251,7 +251,7 @@ public class ShellTools {
 				shellCommand = new String[] { "cmd.exe", "/c", command };
 			}
 			else {
-				shellCommand = new String[] { "/bin/bash", "-c", command };
+				shellCommand = new String[] { "/bin/sh", "-c", command };
 			}
 
 			ProcessBuilder processBuilder = new ProcessBuilder(shellCommand);
