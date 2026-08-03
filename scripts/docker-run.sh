@@ -1,27 +1,81 @@
 #!/bin/sh
+NAME=operator
+ENV_FILE=
+DATA=
+WORKSPACE=
 
-DOCKER_VAR="run -ti --rm "
-DOCKER_VAR+=" -e INFERENCE_MODEL=qwen/qwen3.5-9b"
-DOCKER_VAR+=" -e INFERENCE_BASE_URL=http://host.docker.internal:11434/v1"
-DOCKER_VAR+=" -e INFERENCE_API_KEY="
-DOCKER_VAR+=" -e AGENT_MAX_MESSAGE=1000"
-DOCKER_VAR+=" -e AGENT_MAX_COMPLETION_TOKEN=262144"
-DOCKER_VAR+=" -e AGENT_PATH_MEMORY=/workspace/memory"
-DOCKER_VAR+=" -e AGENT_PATHS_AGENTS=/workspace/agents"
-DOCKER_VAR+=" -e AGENT_PATHS_SKILLS=/workspace/skills"
-DOCKER_VAR+=" -e MCP_SERVERS_CONFIGURATION=/workspace/mcp-servers.json"
-DOCKER_VAR+=" -e CHANNEL_TELEGRAM_TOKEN="
-DOCKER_VAR+=" -e CHANNEL_TELEGRAM_USER_ID="
-DOCKER_VAR+=" -e CHANNEL_DISCORD_TOKEN="
-DOCKER_VAR+=" -e CHANNEL_DISCORD_CHANNEL_ID="
-DOCKER_VAR+=" -e AGENT_TOOLS=TaskTool,SkillTool,ImageReaderTool,GrepTool,GlobTool,ShellTools,FileSystemTools,ListDirectoryTool,SmartWebFetchTool,TodoWriteTool"
-DOCKER_VAR+=" -e UID=$(id -u) -e GID=$(id -g) -w /workspace"
-
-if [ "$1" == "help" ];then
-  echo "Need to specify WORKSPACE and will be mount at /workspace inside Docker env."
-  echo "Ex: $0 ~/workspace"
-elif [ "$1" != "" ] && [ -d $1 ];then
-  docker $DOCKER_VAR -v $(realpath $1):/workspace matrix-operator sh
-else
-  docker $DOCKER_VAR matrix-operator /app/bin/run
+if [ "$(docker ps -a | awk '{print $NF}'| grep $NAME)" != "" ]; then
+    echo "Found existing docker so attaching to it."
+    docker attach $NAME
+    exit 0
 fi
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            echo "Usage: $0 -e .env-docker [-n docker-name] [-d data] [-w workspace]"
+            exit 0
+            ;;
+        -n)
+            if [ "$(docker ps -a | awk '{print $NF}'| grep $2)" != "" ]; then
+                echo "Found existing docker so attaching to it."
+                docker attach $2
+                exit 0
+            fi
+            echo "- docker name is $2."
+            NAME=$2
+            shift 2
+            ;;
+        -e)
+            if [ ! -f "$2" ]; then
+                echo "$2 not found"
+                exit 1
+            fi
+            echo "- env file id loaded from $2."
+            ENV_FILE=$2
+            shift 2 
+            ;;
+        -d)
+            if [ ! -d "$2" ]; then
+                echo "data folder $2 not found"
+                exit 1
+            fi
+            echo "- /data will be available as read-only from $2"
+            DATA=$2
+            shift 2
+            ;;
+        -w)
+            if [ ! -d "$2" ]; then
+                echo "workspace folder $2 not found"
+                exit 1
+            fi
+            echo "- /workspace will be available from $2"
+            WORKSPACE=$2
+            shift 2 
+            ;;
+        *)
+            echo "Unknown positional argument: $1"
+            shift 1 # Move to the next argument
+            ;;
+    esac
+done
+
+if [ "$ENV_FILE" == "" ];then
+    echo "Need to provide ENV_FILE"
+    exit 1
+fi
+
+DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) --env-file $ENV_FILE -ti --restart unless-stopped"
+
+if [ "$NAME" != "" ];then
+    DOCKER_VAR+=" --name $NAME"
+fi
+if [ "$WORKSPACE" != "" ];then
+    DOCKER_VAR+=" -v $(realpath $WORKSPACE):/workspace"
+fi
+if [ "$DATA" != "" ];then
+    DOCKER_VAR+=" -v $(realpath $DATA):/data:ro"
+fi
+
+docker $DOCKER_VAR matrix-operator /app/bin/run
+
