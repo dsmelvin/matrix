@@ -1,7 +1,7 @@
 #!/bin/sh
 NAME=operator
 ENV_FILE=
-DATA=
+METADATA=
 WORKSPACE=
 
 if [ "$(docker ps -a | awk '{print $NF}'| grep $NAME)" != "" ]; then
@@ -13,7 +13,7 @@ fi
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -h|--help)
-            echo "Usage: $0 -e .env-docker [-n docker-name] [-d data] [-w workspace]"
+            echo "Usage: $0 -e .env-docker [-n docker-name] [-d metadata] [-w workspace]"
             exit 0
             ;;
         -n)
@@ -37,11 +37,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         -d)
             if [ ! -d "$2" ]; then
-                echo "data folder $2 not found"
+                echo "metadata folder $2 not found"
                 exit 1
             fi
-            echo "- /data will be available as read-only from $2"
-            DATA=$2
+            echo "- /metadata will be available as read-only from $2"
+            METADATA=$2
             shift 2
             ;;
         -w)
@@ -65,7 +65,7 @@ if [ "$ENV_FILE" == "" ];then
     exit 1
 fi
 
-DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) --env-file $ENV_FILE -ti --restart unless-stopped"
+DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) --env-file $ENV_FILE -ti --rm"
 
 if [ "$NAME" != "" ];then
     DOCKER_VAR+=" --name $NAME"
@@ -73,8 +73,8 @@ fi
 if [ "$WORKSPACE" != "" ];then
     DOCKER_VAR+=" -v $(realpath $WORKSPACE):/workspace"
 fi
-if [ "$DATA" != "" ];then
-    DOCKER_VAR+=" -v $(realpath $DATA):/data:ro"
+if [ "$METADATA" != "" ];then
+    DOCKER_VAR+=" -v $(realpath $METADATA):/metadata:ro"
 fi
 
 docker $DOCKER_VAR matrix-operator /app/bin/run

@@ -1,9 +1,11 @@
 .env
 .env-docker
+/metadata
+/workspace
+
 .DS_Store
 target/
 .playwright-mcp
-/workspace
 
 ### IntelliJ IDEA ###
 .idea

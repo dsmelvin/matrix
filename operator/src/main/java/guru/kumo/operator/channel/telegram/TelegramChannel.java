@@ -4,11 +4,8 @@ import guru.kumo.operator.channel.Channel;
 import guru.kumo.operator.command.OperatorShellCommand;
 import guru.kumo.operator.service.AgentOperatorService;
 import guru.kumo.operator.tool.ImageReaderTool;
-import guru.kumo.operator.tool.TodoWriteTool;
 import lombok.extern.slf4j.Slf4j;
-import org.springaicommunity.agent.common.task.subagent.TaskCall;
-import org.springframework.ai.chat.messages.*;
-import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.content.Media;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
@@ -49,7 +46,7 @@ import java.util.concurrent.ScheduledFuture;
 @Slf4j
 @Service
 @Profile("operator")
-public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements Runnable, Channel {
+public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements Channel {
     private Long userId;
     private String apiToken;
     private TelegramClient telegramClient;
@@ -84,13 +81,17 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
         this.agentOperatorService = agentOperatorService;
         defaultLongPollingUpdateConsumer = this;
         telegramClient = new OkHttpTelegramClient(apiToken);
-        start(new Thread(this), agentOperatorService);
         sendTelegramMessage("Just connected ...");
     }
 
     @Override
-    public void run() {
+    public void shutdown() {
+        if (StringUtils.hasLength(apiToken)) {
+            sendTelegramMessage("Going offline ...");
+            close();
+        }
     }
+
 
     @Override
     public void consume(Update update) {
@@ -105,7 +106,7 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
             } else {
                 sendTelegramAction(SendChatAction.builder().action(ActionType.TYPING.name()).chatId(chat_id).build());
                 ScheduledFuture<?> scheduledFuture = showTelegramTyping(chat_id);
-                agentOperatorService.processCall("Telegram", OperatorShellCommand.conversationId, List.of(UserMessage.builder().text(message_text).build()));
+                sendTelegramMessage(agentOperatorService.processTelegramRequest(OperatorShellCommand.conversationId, List.of(UserMessage.builder().text(message_text).build())));
                 scheduledFuture.cancel(true);
             }
         } else if (update.hasMessage() && update.getMessage().hasPhoto()) {
@@ -135,8 +136,8 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
             }
 
             ScheduledFuture<?> scheduledFuture = showTelegramTyping(chat_id);
-            agentOperatorService.processCall("Telegram", OperatorShellCommand.conversationId,
-                    List.of(builder.text(update.getMessage().hasText() ? update.getMessage().getText() : "ask the user what should we do about it").build()));
+            sendTelegramMessage(agentOperatorService.processTelegramRequest(OperatorShellCommand.conversationId,
+                    List.of(builder.text(update.getMessage().hasText() ? update.getMessage().getText() : "ask the user what should we do about it").build())));
             scheduledFuture.cancel(true);
         } else if (update.hasMessage() && update.getMessage().hasDocument()) {
             Document document = update.getMessage().getDocument();
@@ -153,7 +154,7 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
                 builder.text(e.getMessage()).build();
             }
             ScheduledFuture<?> scheduledFuture = showTelegramTyping(chat_id);
-            agentOperatorService.processCall("Telegram", OperatorShellCommand.conversationId,
+            agentOperatorService.processTelegramRequest(OperatorShellCommand.conversationId,
                     List.of(builder.text(update.getMessage().hasCaption() ? update.getMessage().getCaption() : "ask the user what should we do about it").build()));
             scheduledFuture.cancel(true);
         }
@@ -199,64 +200,5 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
 
     private void sendTelegramMessage(String message) {
         sendTelegramMessage(SendMessage.builder().chatId(userId).text(message).build());
-    }
-
-    @Override
-    public void prefillOutput(List<Message> messageList) {
-        for (Message message : messageList) {
-            switch (message.getMessageType()) {
-                case SYSTEM -> sendTelegramMessage("System prompt is preloaded.");
-                case USER -> sendTelegramMessage("User prompt is preloaded.");
-            }
-        }
-    }
-
-    @Override
-    public void agent(String logPrefix, ChatResponse chatResponse) {
-        if (chatResponse == null) return;
-        if (!StringUtils.hasLength(chatResponse.getResult().getOutput().getText())) return;
-        sendTelegramMessage(String.format("[ASSISTANT]: %s", chatResponse.getResult().getOutput().getText()));
-    }
-
-    @Override
-    public void subagent(TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
-        sendTelegramMessage(String.format("[%s][SYSTEM]: %s", taskCall.subagent_type(), systemMessage.getText()));
-        sendTelegramMessage(String.format("[%s][USER]: %s", taskCall.subagent_type(), userMessage.getText()));
-    }
-
-    @Override
-    public void todos(TodoWriteTool.Todos event) {
-        List<TodoWriteTool.Todos.TodoItem> todos = event.todos();
-        int completed = (int) todos.stream().filter(t -> t.status() == TodoWriteTool.Todos.Status.completed).count();
-        int total = todos.size();
-
-        sendTelegramMessage(String.format("Progress: %d/%d tasks completed (%.0f%%)", completed, total, (completed * 100.0 / total)));
-
-        for (TodoWriteTool.Todos.TodoItem item : todos) {
-            String statusIcon = switch (item.status()) {
-                case completed -> "[✓]";
-                case in_progress -> "[→]";
-                case pending -> "[ ]";
-            };
-            sendTelegramMessage(String.format("%s %s", statusIcon, item.content()));
-        }
-    }
-
-    @Override
-    public void toolCallToString(String logPrefix, AssistantMessage.ToolCall toolCall) {
-        // updateView(String.format("TollCall[id=%s, type=%s, name=%s, arguments={%s}]", toolCall.id(), toolCall.type(), toolCall.name(), toolCall.arguments().substring(0, Math.min(132, toolCall.arguments().length()))));
-    }
-
-    @Override
-    public void toolResponseToString(String logPrefix, ToolResponseMessage.ToolResponse toolResponse) {
-        // updateView(String.format("ToolResponse[id=%s, name=%s, responseData=%s]", toolResponse.id(), toolResponse.name(), toolResponse.responseData().substring(0, Math.min(132, toolResponse.responseData().length()))));
-    }
-
-    @Override
-    public void shutdown() {
-        if (StringUtils.hasLength(apiToken)) {
-            sendTelegramMessage("Going offline ...");
-            close();
-        }
     }
 }

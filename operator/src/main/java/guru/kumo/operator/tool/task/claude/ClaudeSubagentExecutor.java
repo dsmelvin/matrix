@@ -13,13 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.springaicommunity.agent.tools.task.claude;
+package guru.kumo.operator.tool.task.claude;
 
 import guru.kumo.operator.service.AgentOperatorService;
 import org.springaicommunity.agent.common.task.subagent.SubagentDefinition;
 import org.springaicommunity.agent.common.task.subagent.SubagentExecutor;
 import org.springaicommunity.agent.common.task.subagent.TaskCall;
 import org.springaicommunity.agent.tools.SkillsTool;
+import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentDefinition;
 import org.springaicommunity.agent.utils.Skills;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -57,6 +58,6 @@ public class ClaudeSubagentExecutor implements SubagentExecutor {
         SystemMessage systemMessage = SystemMessage.builder().text(claudeSubagent.getContent() + preloadedSkillsSystemSuffix).build();
         UserMessage userMessage = UserMessage.builder().text(taskCall.prompt()).build();
         String conversationId = UUID.randomUUID().toString();
-        return agentOperatorService.startSubAgent(conversationId, taskCall, systemMessage, userMessage);
+        return agentOperatorService.processSubAgentRequest(conversationId, taskCall, systemMessage, userMessage);
     }
 }

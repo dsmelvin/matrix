@@ -45,7 +45,7 @@ public class ImageCommand implements SlashCommand {
         // Defer immediately so Discord doesn't time out (must ack within 3s)
         return event.deferReply().then(Mono.defer(() ->
                 // Run the slow, blocking model call off the event loop
-                Mono.fromCallable(() -> agentOperatorService.callImageModel(question))
+                Mono.fromCallable(() -> agentOperatorService.processImageModelRequest(question))
                         .subscribeOn(Schedulers.boundedElastic())
                         .flatMap(imageResponse -> {
                             if (imageResponse == null) {

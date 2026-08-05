@@ -51,7 +51,7 @@ public class OperatorShellCommand {
         Optional.ofNullable(loadSystemPrompt(systemPromptFileName)).ifPresent(messageArrayList::add);
         Optional.ofNullable(loadSavedSessionMemoryFile(savedSessionMemoryFileName)).ifPresent(messageArrayList::addAll);
         Optional.ofNullable(loadPromptFile(userPromptFileName)).ifPresent(messageArrayList::add);
-        agentOperatorService.sendPrefillMessage(conversationId, messageArrayList);
+        agentOperatorService.processConsoleInitMessage(conversationId, messageArrayList);
     }
 
     private List<Message> loadSavedSessionMemoryFile(String savedSessionMemoryFileName) {

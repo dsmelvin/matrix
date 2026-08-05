@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 @Service
 @Profile("operator")
-public class ConsoleChannel implements Runnable, Channel {
+public class ConsoleChannel extends Thread implements Channel {
     private static final JsonMapper jsonMapper = JsonMapper.builder().build();
 
     private final Terminal terminal;
@@ -31,7 +31,31 @@ public class ConsoleChannel implements Runnable, Channel {
     public ConsoleChannel(Terminal terminal, AgentOperatorService agentOperatorService) {
         this.terminal = terminal;
         this.agentOperatorService = agentOperatorService;
-        start(new Thread(this), agentOperatorService);
+        agentOperatorService.subscribe().subscribe(agentInterfaceOutput -> {
+            switch (agentInterfaceOutput.getType()) {
+                case INIT -> consoleOutput("INIT", agentInterfaceOutput.getMessageList());
+                case CONSOLE -> consoleOutput("CONSOLE", agentInterfaceOutput.getMessageList());
+                case DISCORD -> consoleOutput("DISCORD", agentInterfaceOutput.getMessageList());
+                case TELEGRAM -> consoleOutput("TELEGRAM", agentInterfaceOutput.getMessageList());
+                case AGENT -> agent(agentInterfaceOutput.getLogPrefix(), agentInterfaceOutput.getChatResponse());
+                case SUBAGENT ->
+                        subagent(agentInterfaceOutput.getTaskCall(), agentInterfaceOutput.getSystemMessage(), agentInterfaceOutput.getUserMessage());
+                case TODO -> todos(agentInterfaceOutput.getTodos());
+                case TOOL_CALL ->
+                        toolCallToString(agentInterfaceOutput.getLogPrefix(), agentInterfaceOutput.getToolCall());
+                case TOOL_RESPONSE ->
+                        toolResponseToString(agentInterfaceOutput.getLogPrefix(), agentInterfaceOutput.getToolResponse());
+            }
+        });
+        this.start();
+    }
+
+    @Override
+    public void shutdown() {
+        try {
+            terminal.close();
+        } catch (IOException ignored) {
+        }
     }
 
     @Override
@@ -49,8 +73,7 @@ public class ConsoleChannel implements Runnable, Channel {
             boolean collecting = false;
             while (!isTerminating.get()) {
                 discardPendingInput();
-                updateView(String.format("%s", ColorEnum.BLUE_BOLD_BRIGHT));
-                String nextLine = reader.readLine(collecting ? "" : String.format("%nWaiting for input, type an empty line to finish:%n"));
+                String nextLine = reader.readLine(collecting ? "" : String.format("%n%sWaiting for input, type an empty line to finish:%s%n", ColorEnum.BLUE_BOLD_BRIGHT, ColorEnum.RESET));
                 if (nextLine == null) break; // EOF (e.g. Ctrl+D)
                 String trimmed = nextLine.trim();
                 if (!collecting) {
@@ -61,11 +84,10 @@ public class ConsoleChannel implements Runnable, Channel {
                     collecting = true;
                 } else {
                     if (trimmed.isEmpty()) {
-                        updateView(String.format("%sProcessing ...%s%n", ColorEnum.GREEN_BOLD_BRIGHT, ColorEnum.RESET));
                         // Blank line = end of message, send it
                         try {
                             UserMessage userMessage = UserMessage.builder().text(buffer.toString()).build();
-                            agentOperatorService.processCall("[OPERATOR]", conversationId, List.of(userMessage));
+                            agentOperatorService.processConsoleRequest(conversationId, List.of(userMessage));
                         } catch (Exception e) {
                             if (log.isDebugEnabled()) {
                                 log.error("Failed to process chat message", e);
@@ -98,20 +120,18 @@ public class ConsoleChannel implements Runnable, Channel {
         System.out.println(message);
     }
 
-    @Override
-    public void prefillOutput(List<Message> messageList) {
+    private void consoleOutput(String logPrefix, List<Message> messageList) {
         for (Message message : messageList) {
             switch (message.getMessageType()) {
                 case SYSTEM ->
-                        updateView(String.format("%s[PREFILL][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, message.getText(), ColorEnum.RESET));
+                        updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
                 case USER ->
-                        updateView(String.format("%s[PREFILL][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, message.getText(), ColorEnum.RESET));
+                        updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
             }
         }
     }
 
-    @Override
-    public void agent(String logPrefix, ChatResponse chatResponse) {
+    private void agent(String logPrefix, ChatResponse chatResponse) {
         if (chatResponse == null) return;
         if (chatResponse.getResult().getOutput().getMetadata().containsKey("reasoningContent")) {
             updateView(String.format("%s%s REASONING:[%n%s]%s%n", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET));
@@ -121,14 +141,12 @@ public class ConsoleChannel implements Runnable, Channel {
         updateView(String.format("%s%s %s%s%n%n", ColorEnum.GREEN, logPrefix, chatResponse.getMetadata().getUsage(), ColorEnum.RESET));
     }
 
-    @Override
-    public void subagent(TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
+    private void subagent(TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
         updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET));
         updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET));
     }
 
-    @Override
-    public void todos(TodoWriteTool.Todos event) {
+    private void todos(TodoWriteTool.Todos event) {
         List<TodoWriteTool.Todos.TodoItem> todos = event.todos();
         int completed = (int) todos.stream().filter(t -> t.status() == TodoWriteTool.Todos.Status.completed).count();
         int total = todos.size();
@@ -145,21 +163,11 @@ public class ConsoleChannel implements Runnable, Channel {
         }
     }
 
-    @Override
-    public void toolCallToString(String logPrefix, AssistantMessage.ToolCall toolCall) {
+    private void toolCallToString(String logPrefix, AssistantMessage.ToolCall toolCall) {
         updateView(String.format("%s%s TollCall[id=%s, type=%s, name=%s, arguments={%s}]%s", ColorEnum.CYAN, logPrefix, toolCall.id(), toolCall.type(), toolCall.name(), toolCall.arguments().substring(0, Math.min(132, toolCall.arguments().length())), ColorEnum.RESET));
     }
 
-    @Override
-    public void toolResponseToString(String logPrefix, ToolResponseMessage.ToolResponse toolResponse) {
+    private void toolResponseToString(String logPrefix, ToolResponseMessage.ToolResponse toolResponse) {
         updateView(String.format("%s%s ToolResponse[id=%s, name=%s, responseData=%s]%s", ColorEnum.MAGENTA, logPrefix, toolResponse.id(), toolResponse.name(), toolResponse.responseData().substring(0, Math.min(132, toolResponse.responseData().length())), ColorEnum.RESET));
-    }
-
-    @Override
-    public void shutdown() {
-        try {
-            terminal.close();
-        } catch (IOException ignored) {
-        }
     }
 }

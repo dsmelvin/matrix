@@ -1,16 +1,18 @@
 package guru.kumo.operator.service;
 
+import discord4j.core.GatewayDiscordClient;
 import guru.kumo.operator.channel.model.AgentResponse;
 import guru.kumo.operator.configuration.CustomMcpConfig;
+import guru.kumo.operator.tool.DiscordTool;
 import guru.kumo.operator.tool.ImageReaderTool;
 import guru.kumo.operator.tool.TodoWriteTool;
+import guru.kumo.operator.tool.task.claude.ClaudeSubagentType;
 import guru.kumo.operator.util.Utils;
 import lombok.extern.slf4j.Slf4j;
 import org.springaicommunity.agent.common.task.subagent.TaskCall;
 import org.springaicommunity.agent.tools.*;
 import org.springaicommunity.agent.tools.task.TaskTool;
 import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentReferences;
-import org.springaicommunity.agent.tools.task.claude.ClaudeSubagentType;
 import org.springaicommunity.agent.tools.task.repository.DefaultTaskRepository;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.*;
@@ -37,11 +39,13 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 import reactor.util.concurrent.Queues;
 
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -55,25 +59,25 @@ public class AgentOperatorService {
 
     private final ChatModel chatModel;
     private final ImageModel imageModel;
-    private final Integer maxCompletionTokens;
     private final CustomMcpConfig customMcpConfig;
     private final ChatMemoryService chatMemoryService;
     private final ToolCallingManager toolCallingManager;
+    private final GatewayDiscordClient gatewayDiscordClient;
 
     AgentOperatorService(
             ChatModel chatModel,
             CustomMcpConfig customMcpConfig,
             ChatMemoryService chatMemoryService,
             @Value("${agent.tools}") String[] agentToolList,
-            @Autowired(required = false) ImageModel imageModel,
             @Value("${agent.paths.agents}") List<String> agentPaths,
             @Value("${agent.paths.skills}") List<String> skillPaths,
-            @Value("${agent.chat-model.max-completion-tokens}") Integer maxCompletionTokens) {
+            @Autowired(required = false) ImageModel imageModel,
+            @Autowired(required = false) GatewayDiscordClient gatewayDiscordClient) {
         this.chatModel = chatModel;
         this.imageModel = imageModel;
         this.chatMemoryService = chatMemoryService;
         this.customMcpConfig = customMcpConfig;
-        this.maxCompletionTokens = maxCompletionTokens;
+        this.gatewayDiscordClient = gatewayDiscordClient;
         this.toolCallingManager = ToolCallingManager.builder().build();
         loadTools(agentToolList, loadSkills(skillPaths), loadAgentTasks(agentPaths), customMcpConfig.customMcpToolCallbackProvider());
     }
@@ -91,29 +95,48 @@ public class AgentOperatorService {
         customMcpConfig.shutdown();
     }
 
-    public void sendPrefillMessage(String conversationId, ArrayList<Message> messageList) {
-        publish(new AgentResponse(messageList));
-        if (messageList.stream().anyMatch(message -> message.getMessageType() == MessageType.USER)) {
-            processCall("[OPERATOR]", conversationId, messageList);
-        } else {
-            chatMemoryService.addChatMemory(conversationId, messageList);
-        }
-    }
-
-    public String startSubAgent(String conversationId, TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
-        publish(new AgentResponse(taskCall, systemMessage, userMessage));
-        ChatResponse chatResponse = processCall("[" + taskCall.subagent_type() + "]", conversationId, List.of(systemMessage, userMessage));
-        return chatResponse.getResult().getOutput().getText();
-    }
-
-    public ImageResponse callImageModel(String prompt) {
+    public ImageResponse processImageModelRequest(String prompt) {
         if (imageModel != null) {
             return imageModel.call(new ImagePrompt(prompt));
         }
         return null;
     }
 
-    public ChatResponse processCall(String logPrefix, String conversationId, List<Message> messages) {
+    public void processConsoleInitMessage(String conversationId, ArrayList<Message> messageList) {
+        publish(new AgentResponse(messageList));
+        if (messageList.stream().anyMatch(message -> message.getMessageType() == MessageType.USER)) {
+            processCall("[INIT]", conversationId, messageList);
+        } else {
+            chatMemoryService.addChatMemory(conversationId, messageList);
+        }
+    }
+
+    public String processSubAgentRequest(String conversationId, TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
+        publish(new AgentResponse(taskCall, systemMessage, userMessage));
+        return processCall("[" + taskCall.subagent_type() + "]", conversationId, List.of(systemMessage, userMessage)).getResult().getOutput().getText();
+    }
+
+    public void processConsoleRequest(String conversationId, List<Message> messageList) {
+        publish(new AgentResponse(AgentResponse.Type.CONSOLE, messageList));
+        processCall("[CONSOLE]", conversationId, messageList);
+    }
+
+    public String processDiscordRequest(String conversationId, List<Message> messageList) {
+        publish(new AgentResponse(AgentResponse.Type.DISCORD, messageList));
+        ChatResponse chatResponse = processCall("[DISCORD]", conversationId, messageList);
+        if (StringUtils.hasLength(chatResponse.getResult().getOutput().getText().trim())) {
+            return chatResponse.getResult().getOutput().getText();
+        } else {
+            return null;
+        }
+    }
+
+    public String processTelegramRequest(String conversationId, List<Message> messageList) {
+        publish(new AgentResponse(AgentResponse.Type.TELEGRAM, messageList));
+        return processCall("[TELEGRAM]", conversationId, messageList).getResult().getOutput().getText();
+    }
+
+    private ChatResponse processCall(String logPrefix, String conversationId, List<Message> messages) {
         chatMemoryService.addChatMemory(conversationId, messages);
         Prompt prompt = new Prompt(chatMemoryService.getChatMemory(conversationId), getChatOptions());
         ChatResponse chatResponse = chatModel.call(prompt);
@@ -140,6 +163,22 @@ public class AgentOperatorService {
         return chatResponse;
     }
 
+    private void publish(AgentResponse agentResponse) {
+        Sinks.EmitResult result = sink.tryEmitNext(agentResponse);
+
+        if (result.isFailure()) {
+            // Handle failure explicitly instead of silently dropping
+            switch (result) {
+                case FAIL_OVERFLOW -> System.err.println("Buffer overflow, dropping: " + agentResponse);
+                case FAIL_NON_SERIALIZED -> {
+                    // Not thread-safe by default; retry with emit() + a retry strategy
+                    sink.emitNext(agentResponse, Sinks.EmitFailureHandler.busyLooping(java.time.Duration.ofMillis(100)));
+                }
+                default -> System.err.println("Emit failed: " + result + " for " + agentResponse);
+            }
+        }
+    }
+
     private Message decodeAndDescribeImage(ToolResponseMessage toolResponseMessage) {
         Message message = toolResponseMessage;
         for (ToolResponseMessage.ToolResponse toolResponse : toolResponseMessage.getResponses()) {
@@ -161,29 +200,20 @@ public class AgentOperatorService {
         return message;
     }
 
-    private void publish(AgentResponse agentResponse) {
-        Sinks.EmitResult result = sink.tryEmitNext(agentResponse);
-
-        if (result.isFailure()) {
-            // Handle failure explicitly instead of silently dropping
-            switch (result) {
-                case FAIL_OVERFLOW -> System.err.println("Buffer overflow, dropping: " + agentResponse);
-                case FAIL_NON_SERIALIZED -> {
-                    // Not thread-safe by default; retry with emit() + a retry strategy
-                    sink.emitNext(agentResponse, Sinks.EmitFailureHandler.busyLooping(java.time.Duration.ofMillis(100)));
-                }
-                default -> System.err.println("Emit failed: " + result + " for " + agentResponse);
-            }
-        }
-    }
-
     private List<Resource> loadSkills(List<String> skillPaths) {
         List<Resource> skillResources = new ArrayList<>();
         if (skillPaths == null || skillPaths.isEmpty()) return skillResources;
         skillPaths.forEach(skillPath -> {
-            FileSystemResource resource = new FileSystemResource(skillPath);
+            Path filePath = Path.of("").toAbsolutePath().resolve(skillPath);
+            if (!filePath.toFile().isDirectory() && System.getenv("PWD") != null && !skillPath.startsWith("/")) {
+                filePath = Path.of(System.getenv("PWD")).toAbsolutePath().resolve(skillPath);
+            }
+            FileSystemResource resource = new FileSystemResource(filePath);
             if (Utils.containsFile(resource.getFile(), "SKILL.md")) {
+                log.info("Loading SKILL.md from {}", resource);
                 skillResources.add(resource);
+            } else {
+                log.error("Failed to load SKILL.md from {}", resource);
             }
         });
         return skillResources;
@@ -193,9 +223,16 @@ public class AgentOperatorService {
         List<Resource> agentTasksResources = new ArrayList<>();
         if (agentPaths == null || agentPaths.isEmpty()) return agentTasksResources;
         agentPaths.forEach(agentPath -> {
-            FileSystemResource resource = new FileSystemResource(agentPath);
+            Path filePath = Path.of("").toAbsolutePath().resolve(agentPath);
+            if (!filePath.toFile().isDirectory() && System.getenv("PWD") != null && !agentPath.startsWith("/")) {
+                filePath = Path.of(System.getenv("PWD")).toAbsolutePath().resolve(agentPath);
+            }
+            FileSystemResource resource = new FileSystemResource(filePath);
             if (resource.exists() && resource.isFile()) {
                 agentTasksResources.add(resource);
+                log.info("Loading agentTasks from {}", resource);
+            } else {
+                log.error("Failed to load agentTasks from {}", resource);
             }
         });
         return agentTasksResources;
@@ -218,6 +255,12 @@ public class AgentOperatorService {
                         log.info("SkillTool loaded successfully");
                     }
                 }
+                case "DiscordTool" -> {
+                    if (gatewayDiscordClient != null) {
+                        agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(DiscordTool.builder().gatewayDiscordClient(gatewayDiscordClient).build()).build().getToolCallbacks()));
+                        log.info("DiscordTool loaded successfully");
+                    }
+                }
                 case "TodoWriteTool" -> {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder()
                             .toolObjects(TodoWriteTool.builder().todoEventHandler(todos -> publish(new AgentResponse(todos))).build())
@@ -235,10 +278,6 @@ public class AgentOperatorService {
                 case "GlobTool" -> {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(GlobTool.builder().build()).build().getToolCallbacks()));
                     log.info("GlobTool loaded successfully");
-                }
-                case "ListDirectoryTool" -> {
-                    agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(ListDirectoryTool.builder().build()).build().getToolCallbacks()));
-                    log.info("ListDirectoryTool loaded successfully");
                 }
                 case "FileSystemTools" -> {
                     agentTools.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(FileSystemTools.builder().build()).build().getToolCallbacks()));
@@ -260,9 +299,7 @@ public class AgentOperatorService {
 
     private ChatOptions getChatOptions() {
         if (chatModel instanceof OpenAiChatModel) {
-            return maxCompletionTokens == null ?
-                    ((OpenAiChatModel) chatModel).getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build() :
-                    ((OpenAiChatModel) chatModel).getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).maxCompletionTokens(maxCompletionTokens).build();
+            return ((OpenAiChatModel) chatModel).getOptions().mutate().toolCallbacks(agentTools).parallelToolCalls(true).build();
         } else {
             return ((ToolCallingChatOptions) chatModel.getOptions()).mutate().toolCallbacks(agentTools).build();
         }

@@ -11,12 +11,15 @@ import java.util.List;
 @Getter
 public class AgentResponse {
     public enum Type {
-        PREFILL,
+        INIT,
         SUBAGENT,
         TOOL_CALL,
         TOOL_RESPONSE,
         TODO,
-        AGENT
+        AGENT,
+        CONSOLE,
+        DISCORD,
+        TELEGRAM
     }
 
     private Type type;
@@ -61,7 +64,12 @@ public class AgentResponse {
     }
 
     public AgentResponse(List<Message> messageList) {
-        this.type = Type.PREFILL;
+        this.type = Type.INIT;
+        this.messageList = messageList;
+    }
+
+    public AgentResponse(Type type, List<Message> messageList) {
+        this.type = type;
         this.messageList = messageList;
     }
 }
