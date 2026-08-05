@@ -65,7 +65,7 @@ if [ "$ENV_FILE" == "" ];then
     exit 1
 fi
 
-DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) --env-file $ENV_FILE -ti --rm"
+DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) --env-file $ENV_FILE -ti --rm -w /workspace"
 
 if [ "$NAME" != "" ];then
     DOCKER_VAR+=" --name $NAME"
@@ -78,4 +78,3 @@ if [ "$METADATA" != "" ];then
 fi
 
 docker $DOCKER_VAR matrix-operator /app/bin/run
-
