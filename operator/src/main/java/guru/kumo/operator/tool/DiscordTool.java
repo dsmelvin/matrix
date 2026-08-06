@@ -9,7 +9,6 @@ import org.springframework.ai.tool.annotation.ToolParam;
 
 @Slf4j
 public class DiscordTool {
-    public static final String name = "DiscordTool";
     private final GatewayDiscordClient gatewayDiscordClient;
 
     DiscordTool(GatewayDiscordClient gatewayDiscordClient) {
@@ -17,7 +16,7 @@ public class DiscordTool {
     }
 
     // @formatter:off
-    @Tool(name = name, description = """
+    @Tool(name = "SendMessage", description = """
             Use when you want to initiate a new conversation and must NOT to response or reply back to someone.
             """)
     // @formatter:on
@@ -35,12 +34,13 @@ public class DiscordTool {
     }
 
     // @formatter:off
-    @Tool(name = name, description = """
+    @Tool(name = "GetUserProfile", description = """
             Use when you need to know your profile on Discord.
             """)
     // @formatter:on
-    public User getUserProfile() {
-        return gatewayDiscordClient.getSelf().block();
+    public String getUserProfile() {
+        User user = gatewayDiscordClient.getSelf().block();
+        return String.format("User Id: %s and User Name: %s", user.getId().asString(), user.getUsername());
     }
 
     public static DiscordTool.Builder builder() {
