@@ -9,9 +9,7 @@ import discord4j.core.event.domain.message.MessageUpdateEvent;
 import discord4j.core.object.entity.Message;
 import discord4j.core.object.entity.User;
 import discord4j.core.object.entity.channel.MessageChannel;
-import discord4j.core.spec.MessageEditSpec;
 import discord4j.discordjson.json.ApplicationCommandRequest;
-import discord4j.discordjson.possible.Possible;
 import discord4j.rest.RestClient;
 import discord4j.rest.service.ApplicationService;
 import guru.kumo.operator.channel.Channel;
@@ -27,13 +25,14 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
 @Slf4j
 @Service
@@ -61,13 +60,13 @@ public class DiscordChannel extends Thread implements Channel {
         this.slashCommandList = slashCommandList;
         discordCommand(gatewayDiscordClient.getRestClient());
         this.start();
-        sendDiscordMessage("Just connected ...");
+        sendDiscordMessage("\uD83D\uDC40");
     }
 
     @Override
     public void shutdown() {
         if (StringUtils.hasLength(channelId)) {
-            sendDiscordMessage("Going offline ...");
+            sendDiscordMessage("\uD83D\uDCA4");
             gatewayDiscordClient.logout().block();
         }
     }
@@ -75,45 +74,85 @@ public class DiscordChannel extends Thread implements Channel {
     @Override
     public void run() {
         Mono.when(
-                Flux.merge(gatewayDiscordClient.on(MessageCreateEvent.class), gatewayDiscordClient.on(MessageUpdateEvent.class)).concatMap(event -> {
-                    Message incomingMessage;
-                    if (event instanceof MessageCreateEvent createEvent) {
-                        incomingMessage = createEvent.getMessage();
-                    } else if (event instanceof MessageUpdateEvent updateEvent) {
-                        incomingMessage = updateEvent.getMessage().block();
-                    } else {
-                        incomingMessage = null;
-                    }
+                Flux.merge(gatewayDiscordClient.on(MessageCreateEvent.class), gatewayDiscordClient.on(MessageUpdateEvent.class))
+                        .concatMap(event -> {
+                            Message incomingMessage;
+                            if (event instanceof MessageCreateEvent createEvent) {
+                                incomingMessage = createEvent.getMessage();
+                            } else if (event instanceof MessageUpdateEvent updateEvent) {
+                                incomingMessage = updateEvent.getMessage().block();
+                            } else {
+                                incomingMessage = null;
+                            }
 
-                    if (incomingMessage.getAuthor().isPresent() && incomingMessage.getAuthor().get().getId().equals(botUser.getId())) {
-                        return Mono.empty();
-                    }
-                    if (incomingMessage.getUserMentions().stream().noneMatch(userMention -> userMention.getId().equals(botUser.getId()))) {
-                        return Mono.empty();
-                    }
-                    return incomingMessage.getChannel()
-                            .flatMap(channel -> channel.createMessage("\uD83E\uDD14 Thinking...")
-                                    .flatMap(thinkingMessage -> channel.type().then(Mono.fromCallable(() ->
-                                                    agentOperatorService.processDiscordRequest(OperatorShellCommand.conversationId,
-                                                            List.of(UserMessage.builder().text(String.format("""
-                                                                            You've been mentioned in a message id %s from channel id %s %s.
-                                                                            Here is the message:
-                                                                            %s
-                                                                            """,
-                                                                    incomingMessage.getId().asString(),
-                                                                    incomingMessage.getChannelId().asString(),
-                                                                    incomingMessage.getAuthor().isPresent() ? "by user id " + incomingMessage.getAuthor().get().getId().asString() : "",
-                                                                    incomingMessage.getContent())).build())))
-                                            .subscribeOn(Schedulers.boundedElastic()).flatMap(response -> {
-                                                if (StringUtils.hasLength(response)) {
-                                                    MessageEditSpec editPayload = MessageEditSpec.builder().content(Possible.of(Optional.of(response))).build();
-                                                    return thinkingMessage.edit(editPayload);
-                                                }
-                                                return Mono.empty();
-                                            })
-                                    )));
-                }),
+                            if (incomingMessage == null) {
+                                return Mono.empty();
+                            }
+                            if (incomingMessage.getAuthor().isPresent() && incomingMessage.getAuthor().get().getId().equals(botUser.getId())) {
+                                return Mono.empty();
+                            }
+                            if (incomingMessage.getUserMentions().stream().noneMatch(userMention -> userMention.getId().equals(botUser.getId()))) {
+                                return Mono.empty();
+                            }
+
+                            Message finalIncomingMessage = incomingMessage;
+
+                            return incomingMessage.getChannel()
+                                    .flatMap(channel -> channel.createMessage("\uD83E\uDD14 Thinking...")
+                                            .flatMap(thinkingMessage -> {
+                                                Disposable typingHeartbeat = Flux.interval(Duration.ZERO, Duration.ofSeconds(8))
+                                                        .flatMap(tick -> channel.type().onErrorResume(e -> Mono.empty()))
+                                                        .subscribe();
+
+                                                return Mono.fromCallable(() -> agentOperatorService.processDiscordRequest(
+                                                                OperatorShellCommand.conversationId,
+                                                                List.of(UserMessage.builder().text(buildPrompt(finalIncomingMessage)).build())))
+                                                        .subscribeOn(Schedulers.boundedElastic())
+                                                        .doFinally(signal -> typingHeartbeat.dispose())
+                                                        .flatMap(response -> thinkingMessage.delete())
+                                                        .onErrorResume(e -> {
+                                                            log.error("[DiscordListener] failed to process message id {}", finalIncomingMessage.getId().asString(), e);
+                                                            return thinkingMessage.delete()
+                                                                    .then(sendDiscordMessage(channel, finalIncomingMessage, "\u26A0\uFE0F Sorry, something went wrong processing that."))
+                                                                    .onErrorResume(deleteErr -> Mono.empty());
+                                                        });
+                                            }));
+                        })
+                        .onErrorContinue((error, obj) -> log.error("[DiscordListener] event processing error", error)),
                 gatewayDiscordClient.on(ChatInputInteractionEvent.class, this::handle)).subscribe();
+    }
+
+    private String buildPrompt(Message incomingMessage) {
+        boolean authorIsBot = incomingMessage.getAuthor().map(User::isBot).orElse(false);
+        String authorRef = incomingMessage.getAuthor()
+                .map(a -> "<@" + a.getId().asString() + ">" + (authorIsBot ? " (this author is a bot)" : ""))
+                .orElse("unknown");
+
+        return String.format("""
+                        You were mentioned in a Discord message. Carry out what it asks.
+                        
+                        Only send a Discord reply if the request actually calls for user-facing output — an
+                        answer, data, generated content, or something the user explicitly asked to see. If the
+                        request is an instruction to perform an action (and doesn't ask for a report back), do
+                        NOT send any message about it — not "done", not a summary of what you did, not a status
+                        update. Silently completing the task is the correct outcome; do not call
+                        DiscordSendMessage/DiscordReplyMessage/DiscordEditMessage just to confirm you did
+                        something, unless the user explicitly asked to be told when it's done.
+                        
+                        %s
+                        Author: %s
+                        Channel Id: %s
+                        Message Id: %s
+                        Message:
+                        %s
+                        """,
+                authorIsBot
+                        ? "This message was sent by another bot. Only reply if it contains a genuine question or request for you; if it's just a status update/acknowledgment, you may choose not to reply."
+                        : "",
+                authorRef,
+                incomingMessage.getChannelId().asString(),
+                incomingMessage.getId().asString(),
+                incomingMessage.getContent());
     }
 
     private void discordCommand(RestClient restClient) {
@@ -142,6 +181,15 @@ public class DiscordChannel extends Thread implements Channel {
                 .filter(command -> command.getName().equals(event.getCommandName()))
                 .next()
                 .flatMap(command -> command.handle(event));
+    }
+
+    private Mono<Void> sendDiscordMessage(MessageChannel messageChannel, Message finalIncomingMessage, String response) {
+        if (StringUtils.hasLength(response)) {
+            gatewayDiscordClient.getChannelById(messageChannel.getRestChannel().getId()).ofType(MessageChannel.class)
+                    .flatMap(channel -> channel.createMessage(response))
+                    .then().subscribe();
+        }
+        return Mono.empty();
     }
 
     private void sendDiscordMessage(String message) {

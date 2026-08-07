@@ -1,6 +1,5 @@
 .env
 .env-docker
-/metadata
 /workspace
 
 .DS_Store

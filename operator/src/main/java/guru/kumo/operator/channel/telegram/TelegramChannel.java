@@ -81,13 +81,13 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
         this.agentOperatorService = agentOperatorService;
         defaultLongPollingUpdateConsumer = this;
         telegramClient = new OkHttpTelegramClient(apiToken);
-        sendTelegramMessage("Just connected ...");
+        sendTelegramMessage("\uD83D\uDC40");
     }
 
     @Override
     public void shutdown() {
         if (StringUtils.hasLength(apiToken)) {
-            sendTelegramMessage("Going offline ...");
+            sendTelegramMessage("\uD83D\uDCA4");
             close();
         }
     }
