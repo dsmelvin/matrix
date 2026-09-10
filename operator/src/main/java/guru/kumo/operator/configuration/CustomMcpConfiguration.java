@@ -18,6 +18,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.util.StringUtils;
+import reactor.core.publisher.Mono;
+import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.BufferedReader;
@@ -63,6 +65,8 @@ import java.util.Map;
 public class CustomMcpConfiguration {
     private final static List<McpSyncClient> mcpSyncClientList = new ArrayList<>();
     private final static JsonMapper jsonMapper = new JsonMapper();
+    private final static TypeReference<Map<String, String>> hashMapTypeReference = new TypeReference<>() {
+    };
 
     CustomMcpConfiguration(@Value("${agent.mcp-servers-configuration}") String mcpServersConfiguration) {
         try {
@@ -110,15 +114,23 @@ public class CustomMcpConfiguration {
         return switch (type) {
             case "http", "streamable-http" -> {
                 UrlParts parts = splitUrl(entry.url());
-                yield HttpClientStreamableHttpTransport.builder(parts.baseUri())
-                        .endpoint(parts.path())
-                        .build();
+                HttpClientStreamableHttpTransport.Builder builder = HttpClientStreamableHttpTransport.builder(parts.baseUri()).endpoint(parts.path());
+
+                if (!entry.headers().isEmpty()) {
+                    builder.asyncHttpRequestCustomizer((requestBuilder, method, endpoint, body, context) ->
+                            Mono.fromSupplier(() -> {
+                                entry.headers().forEach(requestBuilder::header);
+                                return requestBuilder;
+                            })
+                    );
+                }
+                yield builder.build();
             }
             case "sse" -> buildSseTransport(entry);
             case "stdio" -> {
                 ServerParameters params = ServerParameters.builder(entry.command())
                         .args(entry.args() != null ? entry.args() : List.of())
-                        .env(entry.env() != null ? entry.env() : Map.of())
+                        .env(entry.env())
                         .build();
                 yield new StdioClientTransport(params, McpJsonDefaults.getMapper());
             }
@@ -170,8 +182,22 @@ public class CustomMcpConfiguration {
             List<String> args,       // stdio
             Map<String, String> env, // stdio
             String url,               // sse / http — single full endpoint URL
-            String envFile
-    ) {
+            String envFile,
+            String httpHeaderFile,
+            Map<String, String> headers) {
+
+        @Override
+        public Map<String, String> headers() {
+            HashMap<String, String> envMap = new HashMap<>();
+            if (httpHeaderFile != null) {
+                loadEnv(httpHeaderFile, envMap);
+            }
+            if (headers != null) {
+                envMap.putAll(headers);
+            }
+            return envMap;
+        }
+
         @Override
         public Map<String, String> env() {
             HashMap<String, String> envMap = new HashMap<>();
