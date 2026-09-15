@@ -1,10 +1,11 @@
 package guru.kumo.operator.channel.model;
 
+import guru.kumo.operator.tool.TaskCall;
 import guru.kumo.operator.tool.TodoWriteTool;
 import lombok.Getter;
-import guru.kumo.operator.tool.TaskCall;
 import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 
 import java.util.List;
 
@@ -19,7 +20,8 @@ public class AgentResponse {
         AGENT,
         CONSOLE,
         DISCORD,
-        TELEGRAM
+        TELEGRAM,
+        TOOL_CALLING_OPTIONS
     }
 
     private Type type;
@@ -32,6 +34,7 @@ public class AgentResponse {
     private SystemMessage systemMessage;
     private UserMessage userMessage;
     private List<Message> messageList;
+    private ToolCallingChatOptions toolCallingChatOptions;
 
     public AgentResponse(String logPrefix, ChatResponse chatResponse) {
         this.type = Type.AGENT;
@@ -71,6 +74,12 @@ public class AgentResponse {
     public AgentResponse(Type type, List<Message> messageList) {
         this.type = type;
         this.messageList = messageList;
+    }
+
+    public AgentResponse( String logPrefix, ToolCallingChatOptions toolCallingChatOptions) {
+        this.type = Type.TOOL_CALLING_OPTIONS;
+        this.logPrefix = logPrefix;
+        this.toolCallingChatOptions = toolCallingChatOptions;
     }
 }
 

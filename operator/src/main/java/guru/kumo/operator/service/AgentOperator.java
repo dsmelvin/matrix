@@ -84,7 +84,7 @@ public class AgentOperator {
         this.builtInCallbackToolList.forEach(toolCallback -> builtInCallbackToolMap.put(toolCallback.getToolDefinition().name(), toolCallback));
         this.allowedTools = Arrays.stream(agentToolList).filter(builtInCallbackToolMap::containsKey).map(builtInCallbackToolMap::get).collect(Collectors.toSet());
 
-        this.toolCallingManager = OperatorToolCallingManager.builder().unlimitedTotalToolCalls().unlimitedCallsPerTool().build();
+        this.toolCallingManager = OperatorToolCallingManager.builder().build();
         if (chatModel instanceof OpenAiChatModel) {
             this.toolCallingChatOptionsBuilder = ((OpenAiChatModel) chatModel).getOptions().mutate().timeout(Duration.ofMinutes(30)).parallelToolCalls(true);
         } else {
@@ -126,12 +126,18 @@ public class AgentOperator {
     }
 
     private ChatResponse processCall(ToolCallingChatOptions toolCallingChatOptions, String logPrefix, String conversationId, List<Message> messages) {
-        chatMemoryService.addChatMemory(conversationId, messages);
-        Prompt prompt = new Prompt(chatMemoryService.getChatMemory(conversationId), toolCallingChatOptions);
-        ChatResponse chatResponse = chatModel.call(prompt);
-        chatMemoryService.addChatMemory(conversationId, chatResponse.getResult());
-        publish(new AgentResponse(logPrefix, chatResponse));
-        return chatResponse.hasToolCalls() ? processToolCall(toolCallingChatOptions, logPrefix, conversationId, chatResponse) : chatResponse;
+        try {
+            publish(new AgentResponse(logPrefix, toolCallingChatOptions));
+            chatMemoryService.addChatMemory(conversationId, messages);
+            Prompt prompt = new Prompt(chatMemoryService.getChatMemory(conversationId), toolCallingChatOptions);
+            ChatResponse chatResponse = chatModel.call(prompt);
+            chatMemoryService.addChatMemory(conversationId, chatResponse.getResult());
+            publish(new AgentResponse(logPrefix, chatResponse));
+            return chatResponse.hasToolCalls() ? processToolCall(toolCallingChatOptions, logPrefix, conversationId, chatResponse) : chatResponse;
+        } catch (Exception e) {
+            log.error(e.getMessage(), e);
+            return new ChatResponse(List.of());
+        }
     }
 
     private ChatResponse processToolCall(ToolCallingChatOptions toolCallingChatOptions, String logPrefix, String conversationId, ChatResponse chatResponse) {

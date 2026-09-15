@@ -11,6 +11,7 @@ import org.jline.reader.LineReaderBuilder;
 import org.jline.terminal.Terminal;
 import org.springframework.ai.chat.messages.*;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
@@ -46,6 +47,8 @@ public class ConsoleChannel extends Thread implements Channel {
                         toolCallToString(agentInterfaceOutput.getLogPrefix(), agentInterfaceOutput.getToolCall());
                 case TOOL_RESPONSE ->
                         toolResponseToString(agentInterfaceOutput.getLogPrefix(), agentInterfaceOutput.getToolResponse());
+                case TOOL_CALLING_OPTIONS ->
+                        toolCallingOptions(agentInterfaceOutput.getLogPrefix(), agentInterfaceOutput.getToolCallingChatOptions());
             }
         });
     }
@@ -120,9 +123,9 @@ public class ConsoleChannel extends Thread implements Channel {
         for (Message message : messageList) {
             switch (message.getMessageType()) {
                 case SYSTEM ->
-                        updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
+                        updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
                 case USER ->
-                        updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
+                        updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
             }
         }
     }
@@ -130,17 +133,17 @@ public class ConsoleChannel extends Thread implements Channel {
     private void agent(String logPrefix, ChatResponse chatResponse) {
         if (chatResponse == null) return;
         if (chatResponse.getResult().getOutput().getMetadata().containsKey("reasoningContent")) {
-            updateView(String.format("%s%s REASONING:[%n%s]%s%n", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET));
+            updateView(String.format("%s%s REASONING:[%n%s]%s", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET));
         }
-        updateView(String.format("%s%s ASSISTANT:[%n%s%n]%s%n", ColorEnum.GREEN_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET));
-        updateView(String.format("%s%s %s%s%n", ColorEnum.GREEN, logPrefix, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET));
-        updateView(String.format("%s%s %s%s%n%n", ColorEnum.GREEN, logPrefix, chatResponse.getMetadata().getUsage(), ColorEnum.RESET));
-        updateView(String.format("%s%s %s%s%n%n", ColorEnum.GREEN, logPrefix, LocalDateTime.now(), ColorEnum.RESET));
+        updateView(String.format("%s%s ASSISTANT:[%n%s%n]%s", ColorEnum.GREEN_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET));
+        updateView(String.format("%s%s %s%s", ColorEnum.GREEN, logPrefix, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET));
+        updateView(String.format("%s%s %s%s", ColorEnum.GREEN, logPrefix, chatResponse.getMetadata().getUsage(), ColorEnum.RESET));
+        updateView(String.format("%s%s Finish Reason:[%s] %s%s%n%n", ColorEnum.GREEN, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("finishReason"), LocalDateTime.now().toLocalTime(), ColorEnum.RESET));
     }
 
     private void subagent(TaskCall taskCall, SystemMessage systemMessage, UserMessage userMessage) {
-        updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET));
-        updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET));
+        updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n", ColorEnum.ORANGE, taskCall.subagent_type(), systemMessage.getText(), ColorEnum.RESET));
+        updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n", ColorEnum.ORANGE, taskCall.subagent_type(), userMessage.getText(), ColorEnum.RESET));
     }
 
     private void todos(TodoWriteTool.Todos event) {
@@ -166,5 +169,9 @@ public class ConsoleChannel extends Thread implements Channel {
 
     private void toolResponseToString(String logPrefix, ToolResponseMessage.ToolResponse toolResponse) {
         updateView(String.format("%s%s ToolResponse[id=%s, name=%s, responseData=%s]%s", ColorEnum.MAGENTA, logPrefix, toolResponse.id(), toolResponse.name(), toolResponse.responseData().substring(0, Math.min(132, toolResponse.responseData().length())), ColorEnum.RESET));
+    }
+
+    private void toolCallingOptions(String logPrefix, ToolCallingChatOptions toolCallingChatOptions) {
+        updateView(String.format("%s%s ToolCallingOptions: %s%s", ColorEnum.BLUE_BRIGHT, logPrefix, toolCallingChatOptions.getToolCallbacks().stream().map(x -> x.getToolDefinition().name()).toList(), ColorEnum.RESET));
     }
 }
