@@ -123,9 +123,9 @@ public class ConsoleChannel extends Thread implements Channel {
         for (Message message : messageList) {
             switch (message.getMessageType()) {
                 case SYSTEM ->
-                        updateView(String.format("%s[%s][SYSTEM]:[%n%s%n]%s%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
+                        updateView(String.format("%s[%s][SYSTEM]:[%s]%s", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
                 case USER ->
-                        updateView(String.format("%s[%s][USER]:[%n%s%n]%s%n", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
+                        updateView(String.format("%s[%s][USER]:[%s]%s", ColorEnum.ORANGE, logPrefix, message.getText(), ColorEnum.RESET));
             }
         }
     }
@@ -133,9 +133,9 @@ public class ConsoleChannel extends Thread implements Channel {
     private void agent(String logPrefix, ChatResponse chatResponse) {
         if (chatResponse == null) return;
         if (chatResponse.getResult().getOutput().getMetadata().containsKey("reasoningContent")) {
-            updateView(String.format("%s%s REASONING:[%n%s]%s", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent"), ColorEnum.RESET));
+            updateView(String.format("%s%s REASONING:[%s]%s", ColorEnum.YELLOW_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("reasoningContent").toString().trim(), ColorEnum.RESET));
         }
-        updateView(String.format("%s%s ASSISTANT:[%n%s%n]%s", ColorEnum.GREEN_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET));
+        updateView(String.format("%s%s ASSISTANT:[%s]%s", ColorEnum.GREEN_BOLD_BRIGHT, logPrefix, chatResponse.getResult().getOutput().getText(), ColorEnum.RESET));
         updateView(String.format("%s%s %s%s", ColorEnum.GREEN, logPrefix, jsonMapper.writeValueAsString(chatResponse.getMetadata().getRateLimit()), ColorEnum.RESET));
         updateView(String.format("%s%s %s%s", ColorEnum.GREEN, logPrefix, chatResponse.getMetadata().getUsage(), ColorEnum.RESET));
         updateView(String.format("%s%s Finish Reason:[%s] %s%s%n%n", ColorEnum.GREEN, logPrefix, chatResponse.getResult().getOutput().getMetadata().get("finishReason"), LocalDateTime.now().toLocalTime(), ColorEnum.RESET));
