@@ -14,6 +14,33 @@ import java.util.regex.Pattern;
 public class ShellTools {
     private static final Map<String, BackgroundProcess> backgroundProcesses = new ConcurrentHashMap<>();
 
+    /**
+     * Destroys a process AND every descendant it spawned (e.g. a backgrounded
+     * grandchild started with "cmd &" that inherited the shell's stdout/stderr
+     * pipes). Killing only the direct child leaves those pipes open, which is
+     * what causes the stdout/stderr reader threads to block on read() forever.
+     */
+    private static void destroyProcessTree(Process process) {
+        // Kill descendants first so they can't re-parent or keep pipes open
+        // after the shell itself is gone.
+        process.descendants().forEach(ph -> {
+            ph.destroy();
+        });
+        process.destroy();
+
+        try {
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.descendants().forEach(ph -> ph.destroyForcibly());
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.descendants().forEach(ph -> ph.destroyForcibly());
+            process.destroyForcibly();
+        }
+    }
+
     private static class BackgroundProcess {
 
         final Process process;
@@ -116,15 +143,7 @@ public class ShellTools {
         }
 
         void destroy() {
-            process.destroy();
-            try {
-                if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                process.destroyForcibly();
-            }
+            destroyProcessTree(process);
         }
 
         int getExitCode() {
@@ -133,12 +152,8 @@ public class ShellTools {
 
     }
 
-    //
-    // Shell comnmands
-    //
-
     // @formatter:off
-	@Tool(name = "Bash", description = """
+    @Tool(name = "Bash", description = """
 		Execute a bash command for terminal operations like npm, docker, make, mvn, python.
 		DO NOT use for file operations — use specialized tools instead:
 		- File search: Use Glob (NOT find or ls)
@@ -195,7 +210,6 @@ public class ShellTools {
 		## Test plan
 		[Bulleted markdown checklist of TODOs for testing the pull request...]
 
-		🤖 Generated with [Claude Code](https://claude.com/claude-code)
 		EOF
 		)"
 		</example>
@@ -207,11 +221,11 @@ public class ShellTools {
 		# Other common operations
 		- View comments on a Github PR: gh api repos/foo/bar/pulls/123/comments
 		""")
-	public String bash(
-		@ToolParam(description = "The command to execute") String command,
-		@ToolParam(description = "Optional timeout in milliseconds (max 600000)", required = false) Long timeout,
-		@ToolParam(description = "Clear, concise description of what this command does in 5-10 words, in active voice. Examples:\nInput: ls\nOutput: List files in current directory\n\nInput: git status\nOutput: Show working tree status\n\nInput: npm install\nOutput: Install package dependencies\n\nInput: mkdir foo\nOutput: Create directory 'foo'", required = false) String description,
-		@ToolParam(description = "Set to true to run this command in the background. Use BashOutput to read the output later.", required = false) Boolean runInBackground) { // @formatter:on
+    public String bash(
+            @ToolParam(description = "The command to execute") String command,
+            @ToolParam(description = "Optional timeout in milliseconds (max 600000)", required = false) Long timeout,
+            @ToolParam(description = "Clear, concise description of what this command does in 5-10 words, in active voice. Examples:\nInput: ls\nOutput: List files in current directory\n\nInput: git status\nOutput: Show working tree status\n\nInput: npm install\nOutput: Install package dependencies\n\nInput: mkdir foo\nOutput: Create directory 'foo'", required = false) String description,
+            @ToolParam(description = "Set to true to run this command in the background. Use BashOutput to read the output later.", required = false) Boolean runInBackground) { // @formatter:on
 
         // Generate unique shell ID for all executions
         String shellId = "shell_" + System.currentTimeMillis();
@@ -273,21 +287,31 @@ public class ShellTools {
                     }
                 });
 
+                // CRITICAL: these must be daemons. If the invoked command backgrounds
+                // a grandchild that inherits stdout/stderr (`server &`, `nohup ... &`),
+                // the pipe never reaches EOF and readLine() blocks forever. Without
+                // setDaemon(true) that leaked thread keeps the whole JVM alive at exit.
+                stdoutThread.setDaemon(true);
+                stderrThread.setDaemon(true);
+
                 stdoutThread.start();
                 stderrThread.start();
 
                 boolean completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
 
                 if (!completed) {
-                    process.destroy();
-                    if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                        process.destroyForcibly();
-                    }
+                    destroyProcessTree(process);
                     return String.format("bash_id: %s\n\nCommand timed out after %dms", shellId, timeoutMs);
                 }
 
-                stdoutThread.join(1000);
-                stderrThread.join(1000);
+                // The shell itself has exited, but reader threads can still be
+                // blocked if a backgrounded grandchild kept the pipe open. Kill
+                // any surviving descendants so the readers actually hit EOF,
+                // then give the join a bounded wait regardless.
+                destroyProcessTree(process);
+
+                stdoutThread.join(2000);
+                stderrThread.join(2000);
 
                 int exitCode = process.exitValue();
                 StringBuilder result = new StringBuilder();
@@ -333,7 +357,7 @@ public class ShellTools {
     }
 
     // @formatter:off
-	@Tool(name = "BashOutput", description = """
+    @Tool(name = "BashOutput", description = """
 		- Retrieves output from a running or completed background bash shell
 		- Takes a shell_id parameter identifying the shell
 		- Always returns only new output since the last check
@@ -342,9 +366,9 @@ public class ShellTools {
 		- Use this tool when you need to monitor or check the output of a long-running shell
 		- Shell IDs can be found using the /bashes command
 		""")
-	public String bashOutput(
-		@ToolParam(description = "The ID of the background shell to retrieve output from") String bash_id,
-		@ToolParam(description = "Optional regular expression to filter the output lines. Only lines matching this regex will be included in the result. Any lines that do not match will no longer be available to read.", required = false) String filter) { // @formatter:on
+    public String bashOutput(
+            @ToolParam(description = "The ID of the background shell to retrieve output from") String bash_id,
+            @ToolParam(description = "Optional regular expression to filter the output lines. Only lines matching this regex will be included in the result. Any lines that do not match will no longer be available to read.", required = false) String filter) { // @formatter:on
 
         BackgroundProcess bgProcess = backgroundProcesses.get(bash_id);
 
@@ -376,15 +400,15 @@ public class ShellTools {
     }
 
     // @formatter:off
-	@Tool(name = "KillShell", description = """
+    @Tool(name = "KillShell", description = """
 		- Kills a running background bash shell by its ID
 		- Takes a shell_id parameter identifying the shell to kill
 		- Returns a success or failure status
 		- Use this tool when you need to terminate a long-running shell
 		- Shell IDs can be found using the /bashes command
 		""")
-	public String killShell(
-		@ToolParam(description = "The ID of the background shell to kill") String bash_id) { // @formatter:on
+    public String killShell(
+            @ToolParam(description = "The ID of the background shell to kill") String bash_id) { // @formatter:on
 
         BackgroundProcess bgProcess = backgroundProcesses.get(bash_id);
 
