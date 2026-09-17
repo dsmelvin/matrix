@@ -15,6 +15,7 @@ import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.shell.core.command.annotation.Arguments;
 import org.springframework.shell.core.command.annotation.Command;
 import org.springframework.shell.core.command.annotation.Option;
 import org.springframework.stereotype.Component;
@@ -58,12 +59,23 @@ public class OperatorShellCommand {
             @Option(longName = "user-prompt-file", shortName = 'u', required = false, description = "To preload a user prompt file")
             String userPromptFileName,
             @Option(longName = "session-memory-file", shortName = 'm', required = false, description = "The history of chat memory file")
-            String savedSessionMemoryFileName) {
+            String savedSessionMemoryFileName,
+            @Option(longName = "user-prompt", shortName = 'i', required = false, description = "To preload a user prompt")
+            String userPrompt,
+            @Arguments List<String> userPromptTokens) {
         if (isDebugMode) debugMode();
         ArrayList<Message> messageArrayList = new ArrayList<>();
         Optional.ofNullable(loadSystemPrompt(systemPromptFileName)).ifPresent(messageArrayList::add);
         Optional.ofNullable(loadSavedSessionMemoryFile(savedSessionMemoryFileName)).ifPresent(messageArrayList::addAll);
         Optional.ofNullable(loadPromptFile(userPromptFileName)).ifPresent(messageArrayList::add);
+        if (userPrompt != null || userPromptTokens != null) {
+            StringBuilder builder = new StringBuilder();
+            Optional.ofNullable(userPrompt).map(u -> u + "\n").ifPresent(builder::append);
+            Optional.ofNullable(userPromptTokens).map(s -> String.join(" ", s)).ifPresent(builder::append);
+            if (!builder.isEmpty()) {
+                messageArrayList.add(UserMessage.builder().text(builder.toString()).build());
+            }
+        }
         agentOperatorService.processConsoleInitMessage(conversationId, messageArrayList);
         if (!oneShot) {
             consoleChannel.start();
