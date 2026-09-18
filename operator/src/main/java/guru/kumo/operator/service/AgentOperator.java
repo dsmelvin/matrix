@@ -84,7 +84,7 @@ public class AgentOperator {
         this.builtInCallbackToolList.forEach(toolCallback -> builtInCallbackToolMap.put(toolCallback.getToolDefinition().name(), toolCallback));
         this.allowedTools = Arrays.stream(agentToolList).filter(builtInCallbackToolMap::containsKey).map(builtInCallbackToolMap::get).collect(Collectors.toSet());
 
-        this.toolCallingManager = OperatorToolCallingManager.builder().build();
+        this.toolCallingManager = OperatorToolCallingManager.builder().maxCallsPerTool(200).maxTotalToolCalls(1000).build();
         if (chatModel instanceof OpenAiChatModel) {
             this.toolCallingChatOptionsBuilder = ((OpenAiChatModel) chatModel).getOptions().mutate().timeout(Duration.ofMinutes(30)).parallelToolCalls(true);
         } else {
