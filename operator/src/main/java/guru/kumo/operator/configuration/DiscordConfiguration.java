@@ -7,19 +7,20 @@ import discord4j.core.object.presence.ClientPresence;
 import discord4j.gateway.intent.Intent;
 import discord4j.gateway.intent.IntentSet;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.*;
-import org.springframework.core.type.AnnotatedTypeMetadata;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 
 @Configuration
-public class DiscordConfiguration implements Condition {
-    @Override
-    public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
-        String propertyValue = context.getEnvironment().getProperty("agent.channel.discord.token");
-        return propertyValue != null && !propertyValue.trim().isEmpty();
-    }
-
+public class DiscordConfiguration {
+    /**
+     * Unconditional and lazy on purpose: in a GraalVM native image {@code @Conditional*} is evaluated at build time,
+     * when the Discord token isn't known yet. The client is therefore always defined, but it only logs in once a
+     * consumer (see {@code DiscordChannel} and {@code AgentOperator}) asks for it, and they only do so when
+     * {@code agent.channel.discord.token} is set at runtime.
+     */
     @Bean
-    @Conditional(DiscordConfiguration.class)
+    @Lazy
     public GatewayDiscordClient gatewayDiscordClient(@Value("${agent.channel.discord.token}") String apiToken) {
         return DiscordClientBuilder.create(apiToken).build()
                 .gateway()

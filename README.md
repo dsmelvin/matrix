@@ -55,6 +55,14 @@ AGENT_PATHS_SKILLS=metadata/skills
 MCP_SERVERS_CONFIGURATION=metadata/mcp-servers.json
 MAIN_AGENT_TOOLBOX=Bash,BashOutput,DiscordEditMessage,DiscordGetSelfInfo,DiscordReplyMessage,DiscordSendMessage,Edit,Glob,Grep,ImageReader,KillShell,Read,Skill,Task,TaskOutput,TodoWrite,WebFetch,Write
 
+# Optional: Bash tool sandbox (disabled automatically inside Docker). Lists are separated by ","
+# AGENT_SHELL_SANDBOX_MODE=required                  # required | auto | off
+# AGENT_SHELL_SANDBOX_WRITABLE_PATHS=~/.m2,~/.npm    # extra writable directories
+# AGENT_SHELL_SANDBOX_DENY_PATHS=~/Documents         # neither readable nor writable
+# AGENT_SHELL_SANDBOX_DENY_FILE_NAMES=.env,*.pem     # denied wherever they are (wildcards * and ?)
+# AGENT_SHELL_SANDBOX_PASS_ENV=GH_TOKEN,NPM_TOKEN    # env variables handed to commands
+# AGENT_SHELL_SANDBOX_ALLOW_NETWORK=true
+
 # Optional: Channels
 CHANNEL_DISCORD_TOKEN=
 CHANNEL_DISCORD_CHANNEL_ID=
@@ -70,7 +78,7 @@ CHANNEL_TELEGRAM_USER_ID=
 ./scripts/run.sh
 
 # Work with different env file or workspace
-./scripts/run.sh dot.env workspace
+./scripts/run.sh -e dot.env -w workspace
 
 # Start with a specific system prompt
 ./scripts/run.sh -s metadata/system/OPERATOR_SYSTEM_PROMPT.md
@@ -88,6 +96,31 @@ CHANNEL_TELEGRAM_USER_ID=
 ./scripts/docker-build.sh
 ./scripts/docker-run.sh
 ```
+
+### 5. Build a GraalVM native image (optional)
+
+Requires **GraalVM 25** (JDK with `native-image`) as `JAVA_HOME`.
+
+```bash
+mvn -Pnative -DskipTests clean package
+./operator/target/operator operator   # same arguments as the jar
+```
+
+The native build runs Spring AOT processing and compiles `operator/target/operator`, which starts in a fraction
+of a second. Extra reflection/resource hints live in
+`operator/src/main/java/guru/kumo/operator/configuration/NativeImageRuntimeHints.java`; when adding tools or
+JSON models that are created or (de)serialized reflectively, keep them under `guru.kumo.operator`. Pass
+`-march=compatibility` through `<buildArgs>` in `operator/pom.xml` if the binary must run on other CPUs.
+
+To get a Docker image based on the native executable instead of the jar:
+
+```bash
+./scripts/docker-build.sh native   # tags the image matrix-operator, so ./scripts/docker-run.sh works unchanged
+```
+
+The native-image build peaks at about 11 GB of RAM, so give the Docker VM at least 12 GB (Colima:
+`colima stop && colima start --memory 12`). The native image runs on a Debian (glibc) base because GraalVM only
+supports fully static musl executables on x64.
 
 ---
 

@@ -1,19 +1,33 @@
 package guru.kumo.operator.tool;
 
+import guru.kumo.operator.util.EnvFileLoader;
+
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
+@Slf4j
 public class ShellTools {
     public static final String TOOL_NAME = "Bash";
     private static final Map<String, BackgroundProcess> backgroundProcesses = new ConcurrentHashMap<>();
+
+    private final ShellSandbox sandbox;
+
+    private ShellTools(ShellSandbox sandbox) {
+        this.sandbox = sandbox;
+    }
 
     /**
      * Destroys a process AND every descendant it spawned (e.g. a backgrounded
@@ -172,6 +186,12 @@ public class ShellTools {
 		- Chain dependent commands with &&. Use ; if earlier failures are acceptable.
 		- Prefer absolute paths over cd.
 
+		Sandbox:
+		- Commands run in a sandbox: the file system is read-only except for the working directory and temp directories,
+		  secrets directories (~/.ssh, ~/.aws, ...) are inaccessible and only a minimal set of environment variables is set.
+		- If a command fails with "Operation not permitted" or "Read-only file system", it tried to write outside
+		  the sandbox. Do not try to work around it; write inside the working directory or /tmp instead.
+
 		Important notes:
 		- NEVER run additional commands to read or explore code, besides git bash commands
 		- NEVER use the TodoWrite or Task tools
@@ -246,20 +266,14 @@ public class ShellTools {
         String shellId = "shell_" + System.currentTimeMillis();
 
         try {
-            // Determine the shell to use based on OS
-            String[] shellCommand;
-            String os = System.getProperty("os.name").toLowerCase();
-            if (os.contains("win")) {
-                shellCommand = new String[]{"cmd.exe", "/c", command};
-            } else {
-                shellCommand = new String[]{"/bin/sh", "-c", command};
-            }
+            // Wrap the command in the OS level sandbox (throws if a sandbox is required but unavailable)
+            String[] shellCommand = sandbox.wrap(command);
 
             ProcessBuilder processBuilder = new ProcessBuilder(shellCommand);
             processBuilder.redirectErrorStream(false);
-
-            // Set working directory if available in tool context
-            // processBuilder.directory(new File(workingDirectory));
+            processBuilder.directory(sandbox.workingDirectory().toFile());
+            EnvFileLoader.applyTo(processBuilder.environment());
+            sandbox.applyEnvironment(processBuilder.environment());
 
             Process process = processBuilder.start();
 
@@ -363,6 +377,8 @@ public class ShellTools {
                 return output;
             }
 
+        } catch (ShellSandbox.SandboxUnavailableException e) {
+            return "Error: command not executed. " + e.getMessage();
         } catch (IOException e) {
             return "Error executing command: " + e.getMessage();
         } catch (InterruptedException e) {
@@ -456,8 +472,77 @@ public class ShellTools {
     }
 
     public static class Builder {
+        private Path workingDirectory;
+        private final List<Path> writableDirectories = new ArrayList<>();
+        private Boolean allowNetwork; // null: AGENT_SHELL_SANDBOX_ALLOW_NETWORK, default true
+        private ShellSandbox.Mode mode;
+        private ShellSandbox sandbox;
+
+        /**
+         * Directory commands start in. Commands can write here, and only in the writable directories.
+         */
+        public Builder workingDirectory(Path workingDirectory) {
+            this.workingDirectory = workingDirectory;
+            return this;
+        }
+
+        public Builder workingDirectory(String workingDirectory) {
+            return workingDirectory(workingDirectory != null ? Path.of(workingDirectory) : null);
+        }
+
+        /**
+         * Additional directories commands may write to.
+         */
+        public Builder writableDirectories(Collection<Path> directories) {
+            this.writableDirectories.addAll(directories);
+            return this;
+        }
+
+        public Builder allowNetwork(boolean allowNetwork) {
+            this.allowNetwork = allowNetwork;
+            return this;
+        }
+
+        /**
+         * Overrides the sandbox mode (default comes from AGENT_SHELL_SANDBOX_MODE, falling back to REQUIRED).
+         */
+        public Builder sandboxMode(ShellSandbox.Mode mode) {
+            this.mode = mode;
+            return this;
+        }
+
+        /**
+         * Use a fully configured sandbox instead of the individual settings above.
+         */
+        public Builder sandbox(ShellSandbox sandbox) {
+            this.sandbox = sandbox;
+            return this;
+        }
+
         public ShellTools build() {
-            return new ShellTools();
+            ShellSandbox effective = sandbox;
+            if (effective == null) {
+                ShellSandbox.Builder sandboxBuilder = ShellSandbox.builder()
+                        .workingDirectory(workingDirectory)
+                        .writableDirectories(writableDirectories);
+                if (allowNetwork != null) {
+                    sandboxBuilder.allowNetwork(allowNetwork);
+                }
+                if (mode != null) {
+                    sandboxBuilder.mode(mode);
+                }
+                effective = sandboxBuilder.build();
+            }
+            log.info("Shell sandbox: {}", effective.describe());
+            if (effective.mode() == ShellSandbox.Mode.OFF && ShellSandbox.isRunningInContainer()) {
+                log.info("Running inside a container, shell commands are not sandboxed any further");
+            } else if (effective.mode() == ShellSandbox.Mode.OFF) {
+                log.warn("Shell sandbox is DISABLED, commands run with the full permissions of this process");
+            } else if (!effective.isActive()) {
+                log.warn("No usable shell sandbox backend found (mode={}); commands will be {}", effective.mode(),
+                        effective.mode() == ShellSandbox.Mode.REQUIRED ? "refused" : "run WITHOUT a sandbox");
+            }
+            return new ShellTools(effective);
         }
     }
 }

@@ -10,9 +10,10 @@ import okio.BufferedSource;
 import org.jspecify.annotations.NonNull;
 import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
+import org.springframework.aot.hint.annotation.RegisterReflectionForBinding;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.util.StringUtils;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -20,11 +21,12 @@ import java.io.IOException;
 
 @Slf4j
 @Configuration
+@RegisterReflectionForBinding({ChatCompletionRequest.class, ChatCompletionResponse.class})
 public class OpenAIClientConfiguration {
     private final static JsonMapper jsonMapper = new JsonMapper();
 
     @Bean
-    public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer(@Lazy AgentOperatorService agentOperatorService) {
+    public OpenAiHttpClientBuilderCustomizer openAiHttpClientBuilderCustomizer(ObjectProvider<AgentOperatorService> agentOperatorServiceProvider) {
         return new OpenAiHttpClientBuilderCustomizer() {
             @Override
             public void customize(SpringAiOpenAiHttpClient.Builder builder) {
@@ -38,7 +40,7 @@ public class OpenAIClientConfiguration {
                             String requestBodyString = buffer.readUtf8();
                             try {
                                 ChatCompletionRequest chatCompletionRequest = jsonMapper.readValue(requestBodyString, ChatCompletionRequest.class);
-                                agentOperatorService.publishInferencePayload(chatCompletionRequest);
+                                agentOperatorServiceProvider.ifAvailable(service -> service.publishInferencePayload(chatCompletionRequest));
                             } catch (Exception e) {
                                 log.error("Failed to deserialize ChatCompletionRequest payload: {}", e.getMessage(), e);
                             }
@@ -57,14 +59,14 @@ public class OpenAIClientConfiguration {
                                 MediaType contentType = responseBody.contentType();
                                 if (contentType != null && contentType.type().equals("application") && contentType.subtype().equals("json")) {
                                     ChatCompletionResponse chatCompletionResponse = jsonMapper.readValue(responseBodyString, ChatCompletionResponse.class);
-                                    agentOperatorService.publishInferencePayload(chatCompletionResponse);
+                                    agentOperatorServiceProvider.ifAvailable(service -> service.publishInferencePayload(chatCompletionResponse));
                                 } else if (contentType != null && contentType.type().equals("text") && contentType.subtype().equals("event-stream")) {
                                     for (String token : responseBodyString.split("\n")) {
                                         if (!StringUtils.hasLength(token.trim())) continue;
                                         if (token.trim().startsWith("data: [DONE]")) break;
                                         if (!token.trim().startsWith("data:")) continue;
                                         ChatCompletionResponse chatCompletionResponse = jsonMapper.readValue(token.substring("data:".length()), ChatCompletionResponse.class);
-                                        agentOperatorService.publishInferencePayload(chatCompletionResponse);
+                                        agentOperatorServiceProvider.ifAvailable(service -> service.publishInferencePayload(chatCompletionResponse));
                                     }
                                 }
                             } catch (Exception e) {
