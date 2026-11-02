@@ -2,11 +2,9 @@ package guru.kumo.operator.service;
 
 import guru.kumo.operator.util.Utils;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.session.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
@@ -17,24 +15,29 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
 @Profile("operator")
 public class ChatMemoryService {
-    private static final int MAX_CHATMEMORY_MESSAGES = 1024;
     private static final ChatMessageListCodec chatMessageListCodec = new ChatMessageListCodec();
-    private static final InMemoryChatMemoryRepository inMemoryChatMemoryRepository = new InMemoryChatMemoryRepository();
-    private final ChatMemory chatMemory;
+    private final SessionService sessionService;
     private final String sessionMemoryPathName;
+    private final ConcurrentHashMap<String, Session> concurrentHashMap = new ConcurrentHashMap<>();
 
     ChatMemoryService(@Value("${agent.path.memory}") String sessionMemoryPathName) {
         this.sessionMemoryPathName = sessionMemoryPathName;
-        this.chatMemory = MessageWindowChatMemory.builder().chatMemoryRepository(inMemoryChatMemoryRepository).maxMessages(MAX_CHATMEMORY_MESSAGES).build();
+        sessionService = DefaultSessionService.builder()
+                .sessionRepository(InMemorySessionRepository.builder().build())
+                .defaultTimeToLive(Duration.ofDays(7))
+                .allowSystemMessages(true)
+                .build();
     }
 
     public void shutdown() {
@@ -52,15 +55,25 @@ public class ChatMemoryService {
     }
 
     public void addChatMemory(String conversationId, List<Message> messageList) {
-        chatMemory.add(conversationId, messageList);
+        if (!concurrentHashMap.containsKey(conversationId)) {
+            concurrentHashMap.put(conversationId, sessionService.create(CreateSessionRequest.builder()
+                    .id(conversationId)
+                    .timeToLive(Duration.ofDays(7))
+                    .metadata(SessionAttributes.PRINCIPAL_NAME, "matrix")
+                    .metadata(SessionAttributes.AGENT_NAME, "operator")
+                    .build()));
+        }
+        messageList.forEach(message -> {
+            sessionService.appendMessage(conversationId, message);
+        });
     }
 
     public void removeChatMemory(String conversationId) {
-        chatMemory.clear(conversationId);
+        concurrentHashMap.keySet().forEach(sessionService::delete);
     }
 
     public List<Message> getChatMemory(String conversationId) {
-        return chatMemory.get(conversationId);
+        return sessionService.getActiveMessages(conversationId);
     }
 
     public String createConversationId() {
@@ -68,8 +81,8 @@ public class ChatMemoryService {
     }
 
     private void saveSessionMemoryFile() {
-        for (String conversationId : inMemoryChatMemoryRepository.findConversationIds()) {
-            if (chatMemory.get(conversationId).isEmpty()) continue;
+        for (String conversationId : concurrentHashMap.keySet()) {
+            if (sessionService.getActiveMessages(conversationId).isEmpty()) continue;
             File sessionMemoryFile = createSessionMemoryFile(conversationId);
             if (sessionMemoryFile != null && sessionMemoryFile.exists()) {
                 try (FileOutputStream fileOutputStream = new FileOutputStream(sessionMemoryFile)) {

@@ -8,8 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.content.Media;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -18,8 +16,7 @@ import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.StringUtils;
 import org.telegram.telegrambots.client.okhttp.OkHttpTelegramClient;
-import org.telegram.telegrambots.longpolling.interfaces.LongPollingUpdateConsumer;
-import org.telegram.telegrambots.longpolling.starter.SpringLongPollingBot;
+import org.telegram.telegrambots.longpolling.TelegramBotsLongPollingApplication;
 import org.telegram.telegrambots.longpolling.util.DefaultLongPollingUpdateConsumer;
 import org.telegram.telegrambots.meta.api.methods.ActionType;
 import org.telegram.telegrambots.meta.api.methods.GetFile;
@@ -53,26 +50,10 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
     private TelegramClient telegramClient;
     private ThreadPoolTaskScheduler taskScheduler;
     private AgentOperatorService agentOperatorService;
-    private DefaultLongPollingUpdateConsumer defaultLongPollingUpdateConsumer;
-
-    @Bean
-    @ConditionalOnExpression("!'${agent.channel.telegram.userId:}'.trim().isEmpty()")
-    public SpringLongPollingBot springLongPollingBot() {
-        return new SpringLongPollingBot() {
-            @Override
-            public String getBotToken() {
-                return apiToken;
-            }
-
-            @Override
-            public LongPollingUpdateConsumer getUpdatesConsumer() {
-                return defaultLongPollingUpdateConsumer;
-            }
-        };
-    }
 
     public TelegramChannel(
             ThreadPoolTaskScheduler taskScheduler,
+            TelegramBotsLongPollingApplication telegramBotsApplication,
             AgentOperatorService agentOperatorService,
             ChatMemoryService chatMemoryService,
             @Value("${agent.channel.telegram.userId}") Long userId,
@@ -82,10 +63,17 @@ public class TelegramChannel extends DefaultLongPollingUpdateConsumer implements
         this.apiToken = apiToken;
         this.taskScheduler = taskScheduler;
         this.agentOperatorService = agentOperatorService;
-        defaultLongPollingUpdateConsumer = this;
         telegramClient = new OkHttpTelegramClient(apiToken);
         sendTelegramMessage("\uD83D\uDC40");
         this.conversationId = chatMemoryService.createConversationId();
+        // Started at runtime, not through a conditional SpringLongPollingBot bean: @Conditional* is evaluated at build
+        // time in a native image, when the token isn't known yet. The starter's TelegramBotInitializer stays idle
+        // because no SpringLongPollingBot bean exists.
+        try {
+            telegramBotsApplication.registerBot(apiToken, this);
+        } catch (TelegramApiException e) {
+            log.error("Failed to start Telegram long polling: {}", e.getMessage(), e);
+        }
     }
 
     @Override

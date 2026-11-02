@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shell sandbox playground</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1218; --panel: #171c25; --panel2: #1d2330; --border: #2a3242; --text: #d7deea; --muted: #8b97ab;
+    --accent: #5aa2ff; --ok: #3fb97a; --bad: #ef5b5b; --warn: #e5b44c; --info: #7e8aa3;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel2); border: 1px solid var(--border); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.bad { color: var(--bad); border-color: var(--bad); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); } .badge.info { color: var(--info); }
+  main { display: grid; grid-template-columns: 340px minmax(0, 1fr) 360px; gap: 14px; padding: 14px; align-items: start; }
+  @media (max-width: 1200px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input[type=text], input[type=number], select, textarea {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; font: 13px var(--mono);
+  }
+  textarea { min-height: 110px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #07101d; font-weight: 600; }
+  button.yes { border-color: var(--ok); color: var(--ok); } button.no { border-color: var(--bad); color: var(--bad); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .row.tight > * { flex: 1; }
+  pre { margin: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font: 12.5px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 460px; overflow: auto; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12.5px; }
+  .kv div:nth-child(odd) { color: var(--muted); } .kv div:nth-child(even) { font-family: var(--mono); word-break: break-all; }
+  .warnings div { color: var(--warn); margin: 4px 0; font-size: 12.5px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; } .chip { font: 11.5px var(--mono); background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
+  .preset-group { margin-bottom: 10px; } .preset-group h3 { font-size: 12px; color: var(--muted); margin: 0 0 5px; }
+  .preset { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; margin-bottom: 4px; }
+  .preset .name { flex: 1; } .preset small { color: var(--muted); }
+  .preset.dim { opacity: .55; }
+  .tag { font: 600 10.5px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+  .tag.ok { color: var(--ok); border-color: var(--ok); } .tag.fail { color: var(--bad); border-color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; } th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; } td.pass { color: var(--ok); } td.fail { color: var(--bad); font-weight: 600; } td.na, td.info { color: var(--info); }
+  .prompt { border: 1px solid var(--warn); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; background: #2a2412; }
+  .prompt .q { margin-bottom: 6px; } .history { font: 12px var(--mono); color: var(--muted); }
+  .history div { padding: 2px 0; border-bottom: 1px dashed var(--border); } .muted { color: var(--muted); } .hidden { display: none; }
+  .exit { font: 600 12px var(--mono); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shell sandbox playground</h1>
+  <span id="hostBadge" class="badge">…</span>
+  <span id="backendBadge" class="badge">…</span>
+  <span id="modeBadge" class="badge">…</span>
+  <span id="netBadge" class="badge">…</span>
+  <span class="muted" style="margin-left:auto">Runs through <code>ShellTools.bash</code>, exactly like the agent</span>
+</header>
+
+<main>
+  <!-- Left: configuration -->
+  <div>
+    <section>
+      <h2>Configuration</h2>
+      <label for="envFile">Env file <span class="muted">(--env-file; blank = .env in the launch directory)</span></label>
+      <input id="envFile" type="text" placeholder="~/matrix/.env" spellcheck="false">
+      <label for="workspace">Workspace <span class="muted">(--workspace; blank = launch directory)</span></label>
+      <input id="workspace" type="text" placeholder="/path/to/project" spellcheck="false">
+      <label for="mode">Sandbox mode override</label>
+      <select id="mode">
+        <option value="">from env file (AGENT_SHELL_SANDBOX_MODE)</option>
+        <option value="required">required</option><option value="auto">auto</option><option value="off">off</option>
+      </select>
+      <label for="network">Network override <span class="muted">(ignored when ALLOWED_HOSTS is set)</span></label>
+      <select id="network">
+        <option value="">from env file (AGENT_SHELL_SANDBOX_ALLOW_NETWORK)</option>
+        <option value="allow">allow</option><option value="block">block</option>
+      </select>
+      <div class="row"><button id="applyBtn" class="primary">Apply &amp; rebuild sandbox</button><span id="applyMsg" class="muted"></span></div>
+    </section>
+
+    <section>
+      <h2>Effective sandbox</h2>
+      <div id="warnings" class="warnings"></div>
+      <div id="sandboxKv" class="kv"></div>
+      <label>Sandbox description</label>
+      <pre id="sandboxDesc" style="max-height:170px"></pre>
+      <label>Variables loaded from the env file (names only)</label>
+      <div id="envNames" class="chips"></div>
+    </section>
+
+    <section>
+      <h2>Approval questions</h2>
+      <div class="muted" style="font-size:12.5px;margin-bottom:8px">Network hosts that are not allow-listed and the Docker socket ask here, instead of the console. No answer within <span id="promptTimeout">9</span>s counts as no.</div>
+      <div id="prompts"></div>
+      <div id="history" class="history"></div>
+    </section>
+  </div>
+
+  <!-- Middle: command + output -->
+  <div>
+    <section>
+      <h2>Command</h2>
+      <textarea id="command" spellcheck="false" placeholder="Shell command, e.g. ls -la ~/.ssh   (Ctrl/Cmd+Enter to run)"></textarea>
+      <div class="row">
+        <button id="runBtn" class="primary">Run</button>
+        <label style="margin:0;display:flex;align-items:center;gap:6px">Timeout (ms) <input id="timeout" type="number" value="30000" min="1000" max="600000" style="width:110px"></label>
+        <label style="margin:0;display:flex;align-items:center;gap:6px"><input id="background" type="checkbox"> background</label>
+        <span id="runInfo" class="muted"></span>
+      </div>
+      <div class="row hidden" id="bgRow">
+        <span class="muted">Background shell <b id="bgId"></b></span>
+        <button id="pollBtn">Poll new output</button><button id="killBtn" class="no">Kill</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Output <span id="exitBadge" class="exit"></span></h2>
+      <pre id="output" class="muted">Nothing run yet.</pre>
+    </section>
+
+    <section>
+      <h2>Probe results</h2>
+      <div class="row" style="margin:0 0 10px">
+        <button id="runAllBtn">Run all probes for <span id="runAllOs">this OS</span></button>
+        <span id="runAllInfo" class="muted"></span>
+      </div>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">
+        “Expected” assumes the default config (<code>dot.env</code>: no network, no Docker socket). With other settings an unexpected result can be correct.
+        Exit code 127 (tool not installed) is reported as n/a.
+      </div>
+      <table id="results"><thead><tr><th>Probe</th><th>Expect</th><th>Exit</th><th>Verdict</th><th>Output (first line)</th></tr></thead><tbody></tbody></table>
+    </section>
+  </div>
+
+  <!-- Right: presets -->
+  <div>
+    <section>
+      <h2>Probes <span class="muted" style="text-transform:none">(click to load, ▶ to run)</span></h2>
+      <div id="presets"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const TOKEN = '__TOKEN__';
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------------------------------------------------------
+// Probes. expect: ok = exit 0 is the good outcome, fail = non-zero is the good outcome, info = just look at it.
+// Commands run with /bin/sh -c, so they stick to POSIX sh and tools that exist on both macOS and Linux.
+// ---------------------------------------------------------------------------------------------------------------
+const PRESETS = [
+  { group: 'Filesystem', name: 'Write inside the workspace', os: 'all', expect: 'ok',
+    cmd: 'echo probe > .sbx-probe.txt && cat .sbx-probe.txt && rm .sbx-probe.txt' },
+  { group: 'Filesystem', name: 'Write to /tmp', os: 'all', expect: 'ok',
+    cmd: 'f=$(mktemp /tmp/sbx.XXXXXX) && echo ok > "$f" && cat "$f" && rm "$f"' },
+  { group: 'Filesystem', name: 'Write to $HOME (outside)', os: 'all', expect: 'fail',
+    cmd: 'touch "$HOME/.sbx-probe" && { echo "WRITTEN to $HOME (not blocked)"; rm -f "$HOME/.sbx-probe"; }' },
+  { group: 'Filesystem', name: 'Write to /var/tmp (outside)', os: 'all', expect: 'fail',
+    cmd: 'touch /var/tmp/.sbx-probe && { echo "WRITTEN to /var/tmp (not blocked)"; rm -f /var/tmp/.sbx-probe; }' },
+  { group: 'Filesystem', name: 'Extra writable paths (~/.m2, ~/.npm)', os: 'all', expect: 'info',
+    note: 'Writable only when listed in AGENT_SHELL_SANDBOX_WRITABLE_PATHS',
+    cmd: [
+      'for d in "$HOME/.m2" "$HOME/.npm"; do',
+      '  if [ -d "$d" ]; then',
+      '    if touch "$d/.sbx-probe" 2>/dev/null; then echo "$d: writable"; rm -f "$d/.sbx-probe"; else echo "$d: read-only"; fi',
+      '  else echo "$d: does not exist"; fi',
+      'done'].join('\n') },
+  { group: 'Filesystem', name: 'Secret directories are hidden', os: 'all', expect: 'ok',
+    note: 'macOS denies access, Linux mounts an empty tmpfs over them',
+    cmd: [
+      'bad=0',
+      'for d in .ssh .aws .gnupg .kube .azure .config/gcloud; do',
+      '  p="$HOME/$d"',
+      '  if [ ! -e "$p" ]; then echo "$d: not visible"; continue; fi',
+      '  n=$(ls -A "$p" 2>/dev/null | wc -l | tr -d " ")',
+      '  if [ "$n" -eq 0 ]; then echo "$d: hidden"; else echo "$d: VISIBLE ($n entries)"; bad=1; fi',
+      'done',
+      'if [ -s "$HOME/.netrc" ]; then echo ".netrc: VISIBLE"; bad=1; else echo ".netrc: hidden or missing"; fi',
+      'exit $bad'].join('\n') },
+  { group: 'Filesystem', name: 'Symlink to ~/.ssh does not bypass the deny', os: 'all', expect: 'ok',
+    note: 'The trailing slash makes ls follow the link; without it ls lists the link itself when the target is blocked',
+    cmd: 'ln -s "$HOME/.ssh" .sbx-link; n=$(ls -A .sbx-link/ 2>/dev/null | wc -l | tr -d " "); rm -f .sbx-link; echo "entries visible through the symlink: $n"; [ "$n" -eq 0 ]' },
+  { group: 'Filesystem', name: 'Denied file name: read .env in workspace', os: 'all', expect: 'ok',
+    note: 'Needs a .env file in the workspace to be meaningful',
+    cmd: 'if [ -e .env ]; then n=$(cat .env 2>/dev/null | wc -c | tr -d " "); if [ "$n" -eq 0 ]; then echo ".env is hidden"; else echo ".env READABLE ($n bytes)"; exit 1; fi; else echo "no .env in $PWD: create one to test"; fi' },
+  { group: 'Filesystem', name: 'Denied file name: create *.pem', os: 'all', expect: 'info',
+    note: 'macOS blocks creating it, Linux only masks files that already exist when the command starts',
+    cmd: 'echo x > sbx-probe.pem; rc=$?; rm -f sbx-probe.pem; echo "create exit code: $rc"; exit $rc' },
+  { group: 'Filesystem', name: 'Read system files and $HOME', os: 'all', expect: 'ok',
+    cmd: 'head -3 /etc/hosts && ls "$HOME" | head -5' },
+
+  { group: 'Environment', name: 'List environment', os: 'all', expect: 'info',
+    note: 'Only the allow-list (PATH, HOME, ...) plus AGENT_SHELL_SANDBOX_PASS_ENV should show up',
+    cmd: 'env | sort' },
+  { group: 'Environment', name: 'No secrets in environment', os: 'all', expect: 'ok',
+    cmd: 'leaked=$(env | grep -E "^(INFERENCE_API_KEY|CHANNEL_[A-Z_]*TOKEN|AGENT_GIT_HTTPS_TOKEN|OPENAI_API_KEY|GOOGLE_API_KEY|AWS_[A-Z_]*|GITHUB_TOKEN)=" | cut -d= -f1); if [ -n "$leaked" ]; then echo "LEAK: $leaked"; exit 1; else echo "no known secret variables visible"; fi' },
+  { group: 'Environment', name: 'Pass-through variable (GH_TOKEN)', os: 'all', expect: 'info',
+    note: 'Set only with AGENT_SHELL_SANDBOX_PASS_ENV=GH_TOKEN and a value in the env file/OS',
+    cmd: 'if [ -n "$GH_TOKEN" ]; then echo "GH_TOKEN is passed to the command"; else echo "GH_TOKEN is not visible"; fi' },
+
+  { group: 'Network', name: 'HTTPS to example.com', os: 'all', expect: 'fail',
+    note: 'Default: blocked. Works with ALLOW_NETWORK=true or when the host is in ALLOWED_HOSTS',
+    cmd: 'command -v curl >/dev/null || { echo "curl not installed"; exit 127; }; curl -sS -m 6 -o /dev/null -w "HTTP %{http_code}\n" https://example.com' },
+  { group: 'Network', name: 'HTTPS to github.com', os: 'all', expect: 'info',
+    note: 'Allowed only through ALLOWED_HOSTS (e.g. github.com) or ALLOW_NETWORK=true',
+    cmd: 'command -v curl >/dev/null || { echo "curl not installed"; exit 127; }; curl -sS -m 6 -o /dev/null -w "HTTP %{http_code}\n" https://github.com' },
+  { group: 'Network', name: 'Host not on the list (asks for approval)', os: 'all', expect: 'info',
+    note: 'With ALLOWED_HOSTS set, answer the question in the "Approval questions" panel',
+    cmd: 'command -v curl >/dev/null || { echo "curl not installed"; exit 127; }; curl -sS -m 15 -o /dev/null -w "HTTP %{http_code}\n" https://www.wikipedia.org' },
+  { group: 'Network', name: 'Proxy variables', os: 'all', expect: 'info',
+    cmd: 'env | grep -i -E "^(http|https|all|no)_proxy=" || echo "no proxy variables (network is fully open or fully blocked)"' },
+  { group: 'Network', name: 'DNS lookup', os: 'all', expect: 'info',
+    cmd: '(getent hosts example.com || dscacheutil -q host -a name example.com) 2>&1 | head -3' },
+  { group: 'Network', name: 'SSH to github.com', os: 'all', expect: 'info',
+    note: 'ssh does not use HTTP proxies, so it only works with ALLOW_NETWORK=true',
+    cmd: 'command -v ssh >/dev/null || exit 127; ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 | head -3' },
+
+  { group: 'Docker', name: 'docker ps through the broker', os: 'all', expect: 'info',
+    note: 'With AGENT_SHELL_SANDBOX_DOCKER_SOCKET set this asks for approval',
+    cmd: 'echo "DOCKER_HOST=${DOCKER_HOST:-unset}"; command -v docker >/dev/null || { echo "docker not installed"; exit 127; }; docker ps 2>&1 | head -5' },
+  { group: 'Docker', name: 'Real Docker socket is not reachable directly', os: 'all', expect: 'ok',
+    cmd: [
+      'command -v curl >/dev/null || { echo "curl not installed"; exit 127; }',
+      'bad=0',
+      'for s in /var/run/docker.sock "$HOME/.colima/default/docker.sock" "$HOME/.docker/run/docker.sock" "$HOME/.rd/docker.sock"; do',
+      '  if [ -S "$s" ]; then',
+      '    if curl -s -m 3 --unix-socket "$s" http://localhost/_ping | grep -q OK; then echo "REACHABLE: $s"; bad=1; else echo "$s: not reachable"; fi',
+      '  fi',
+      'done',
+      'echo "(checked the well-known Docker socket locations)"',
+      'exit $bad'].join('\n') },
+
+  { group: 'Process', name: 'Identity and directories', os: 'all', expect: 'info',
+    cmd: 'id; uname -a; echo "cwd=$PWD"; echo "HOME=$HOME"; echo "TMPDIR=$TMPDIR"' },
+  { group: 'Process', name: 'Visible processes', os: 'all', expect: 'info',
+    note: 'Linux (bubblewrap) uses a private PID namespace, macOS shows every process',
+    cmd: 'ps -ef | head -15' },
+
+  { group: 'macOS (Seatbelt)', name: 'Nested sandbox-exec', os: 'macos', expect: 'fail',
+    cmd: 'sandbox-exec -p "(version 1)(allow default)" /usr/bin/true' },
+  { group: 'macOS (Seatbelt)', name: 'defaults write (cfprefsd)', os: 'macos', expect: 'fail',
+    note: 'Preference writes go through a system daemon (XPC), not a file write by the command. On macOS 27 this was NOT blocked by the profile, so UNEXPECTED here is a real finding',
+    cmd: 'defaults write com.example.sbxprobe k 1 && { echo "WRITTEN (not blocked)"; defaults delete com.example.sbxprobe; }' },
+  { group: 'macOS (Seatbelt)', name: 'Keychain files and clipboard', os: 'macos', expect: 'info',
+    note: 'Not part of the default deny list: shows what a command can still reach',
+    cmd: 'ls ~/Library/Keychains 2>&1 | head -5; echo "clipboard bytes: $(pbpaste 2>&1 | wc -c | tr -d " ")"' },
+  { group: 'macOS (Seatbelt)', name: 'osascript (Apple Events)', os: 'macos', expect: 'info',
+    cmd: 'osascript -e "return 1" 2>&1' },
+
+  { group: 'Linux (bubblewrap)', name: 'Capabilities and namespaces', os: 'linux', expect: 'info',
+    cmd: 'grep -E "^(CapPrm|CapEff|CapBnd|NoNewPrivs|Seccomp):" /proc/self/status; ls -l /proc/self/ns; cat /proc/self/uid_map' },
+  { group: 'Linux (bubblewrap)', name: 'mount a filesystem', os: 'linux', expect: 'fail',
+    cmd: 'mount -t tmpfs none /mnt' },
+  { group: 'Linux (bubblewrap)', name: 'Number of visible PIDs', os: 'linux', expect: 'info',
+    cmd: 'ls /proc | grep -E "^[0-9]+$" | wc -l' },
+  { group: 'Linux (bubblewrap)', name: 'Write to /etc (read-only root)', os: 'linux', expect: 'fail',
+    cmd: 'touch /etc/.sbx-probe && { echo "WRITTEN (not blocked)"; rm -f /etc/.sbx-probe; }' },
+];
+
+let state = null;
+let lastBackgroundId = null;
+
+// ---------------------------------------------------------------------------------------------------------------
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'X-Playground-Token': TOKEN, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || ('HTTP ' + res.status));
+  return json;
+}
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === 'class') node.className = value; else if (key === 'text') node.textContent = value;
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value); else node.setAttribute(key, value);
+  }
+  for (const child of children) node.append(child);
+  return node;
+}
+
+function badge(node, text, kind) { node.textContent = text; node.className = 'badge ' + (kind || ''); }
+
+// ---------------------------------------------------------------------------------------------------------------
+function renderState() {
+  const s = state;
+  badge($('hostBadge'), s.host.osName + (s.host.inContainer ? ' · container' : ''), 'info');
+  badge($('backendBadge'), 'backend: ' + s.sandbox.backend, s.sandbox.active ? 'ok' : 'bad');
+  badge($('modeBadge'), 'mode: ' + s.sandbox.mode, s.sandbox.mode === 'REQUIRED' ? 'ok' : 'warn');
+  badge($('netBadge'), s.sandbox.networkBlocked ? 'network: blocked' : 'network: open / filtered', s.sandbox.networkBlocked ? 'ok' : 'warn');
+
+  $('envFile').value = s.settings.envFile; $('workspace').value = s.settings.workspace;
+  $('mode').value = s.settings.mode; $('network').value = s.settings.network;
+
+  const warnings = $('warnings'); warnings.replaceChildren(...s.warnings.map(w => el('div', { text: '⚠ ' + w })));
+  const kv = $('sandboxKv'); kv.replaceChildren();
+  const rows = [
+    ['Host', s.host.os], ['User', s.host.user], ['Home', s.host.home], ['Workspace', s.workspace],
+    ['Env file', s.envFile.resolved + (s.envFile.exists ? '' : '  (missing)')],
+    ['Tools', Object.entries(s.binaries).map(([k, v]) => (v ? '✓ ' : '✗ ') + k).join('  ')],
+  ];
+  for (const [k, v] of rows) kv.append(el('div', { text: k }), el('div', { text: v }));
+  $('sandboxDesc').textContent = s.sandbox.description;
+  $('envNames').replaceChildren(...(s.envFile.variableNames.length
+    ? s.envFile.variableNames.map(n => el('span', { class: 'chip', text: n }))
+    : [el('span', { class: 'muted', text: 'none' })]));
+  $('promptTimeout').textContent = Math.round(s.promptTimeoutMs / 1000);
+  $('runAllOs').textContent = s.host.os;
+  renderPresets();
+}
+
+function applicable(p) { return p.os === 'all' || p.os === state.host.os; }
+
+function renderPresets() {
+  const container = $('presets'); container.replaceChildren();
+  const groups = [...new Set(PRESETS.map(p => p.group))];
+  for (const group of groups) {
+    const box = el('div', { class: 'preset-group' }, el('h3', { text: group }));
+    for (const p of PRESETS.filter(x => x.group === group)) {
+      const row = el('button', { class: 'preset' + (applicable(p) ? '' : ' dim'), title: (p.note ? p.note + '\n\n' : '') + p.cmd, onclick: () => { $('command').value = p.cmd; $('command').focus(); } },
+        el('span', { class: 'name', text: p.name }),
+        el('span', { class: 'tag ' + (p.expect === 'info' ? '' : p.expect), text: p.expect === 'ok' ? 'EXPECT OK' : p.expect === 'fail' ? 'EXPECT BLOCKED' : 'INFO' }),
+        el('span', { class: 'tag', text: p.os === 'all' ? 'ALL' : p.os.toUpperCase(), title: 'Runs on' }),
+        el('span', { text: '▶', title: 'Run now', onclick: ev => { ev.stopPropagation(); $('command').value = p.cmd; run(); } }));
+      box.append(row);
+    }
+    container.append(box);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+function parseResult(output) {
+  if (output.startsWith('Error: command not executed')) return { code: -1, label: 'refused' };
+  if (/Command timed out after/.test(output)) return { code: -2, label: 'timeout' };
+  const m = output.match(/Exit code: (\d+)\s*$/);
+  return { code: m ? parseInt(m[1], 10) : 0, label: m ? m[1] : '0' };
+}
+
+function verdict(expect, code) {
+  if (code === -1) return 'refused';
+  if (code === -2) return 'timeout';
+  if (code === 127) return 'na';
+  if (expect === 'ok') return code === 0 ? 'pass' : 'fail';
+  if (expect === 'fail') return code !== 0 ? 'pass' : 'fail';
+  return 'info';
+}
+
+async function execute(command) {
+  const background = $('background').checked;
+  return api('/api/run', { command, timeoutMs: parseInt($('timeout').value, 10) || 30000, background });
+}
+
+async function run() {
+  const command = $('command').value;
+  if (!command.trim()) return;
+  $('runBtn').disabled = true; $('runInfo').textContent = 'running…'; $('exitBadge').textContent = '';
+  $('output').className = ''; $('output').textContent = '';
+  try {
+    const result = await execute(command);
+    $('output').textContent = result.output;
+    const parsed = parseResult(result.output);
+    const background = $('background').checked;
+    if (background) {
+      const m = result.output.match(/bash_id: (\S+)/);
+      if (m) { lastBackgroundId = m[1]; $('bgId').textContent = m[1]; $('bgRow').classList.remove('hidden'); }
+      $('exitBadge').textContent = 'started in background';
+    } else {
+      $('exitBadge').textContent = parsed.code === -1 ? '· refused by the sandbox' : parsed.code === -2 ? '· timed out' : '· exit code ' + parsed.label;
+      $('exitBadge').style.color = parsed.code === 0 ? 'var(--ok)' : 'var(--bad)';
+    }
+    $('runInfo').textContent = result.elapsedMs + ' ms';
+  } catch (e) {
+    $('output').textContent = 'Request failed: ' + e.message; $('runInfo').textContent = '';
+  } finally { $('runBtn').disabled = false; }
+}
+
+async function runAll() {
+  const tbody = $('results').querySelector('tbody'); tbody.replaceChildren();
+  const list = PRESETS.filter(applicable);
+  $('runAllBtn').disabled = true;
+  let pass = 0, fail = 0;
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    $('runAllInfo').textContent = `running ${i + 1}/${list.length}: ${p.name}`;
+    let output, code, v;
+    try {
+      const res = await api('/api/run', { command: p.cmd, timeoutMs: 30000, background: false });
+      output = res.output; code = parseResult(output).code; v = verdict(p.expect, code);
+    } catch (e) { output = e.message; code = -3; v = 'fail'; }
+    if (v === 'pass') pass++; if (v === 'fail') fail++;
+    const first = output.replace(/^bash_id: \S+\s*/, '').split('\n').find(l => l.trim()) || '';
+    const label = { pass: 'as expected', fail: 'UNEXPECTED', na: 'n/a', info: 'info', refused: 'refused', timeout: 'timeout' }[v];
+    tbody.append(el('tr', { title: output }, el('td', { text: p.name }),
+      el('td', { text: p.expect === 'ok' ? 'ok' : p.expect === 'fail' ? 'blocked' : '–' }),
+      el('td', { text: code < 0 ? '–' : String(code) }), el('td', { class: v, text: label }), el('td', { class: 'muted', text: first.slice(0, 140) })));
+  }
+  $('runAllInfo').textContent = `done: ${pass} as expected, ${fail} unexpected`;
+  $('runAllBtn').disabled = false;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+async function apply() {
+  $('applyBtn').disabled = true; $('applyMsg').textContent = 'rebuilding…';
+  try {
+    state = await api('/api/configure', {
+      envFile: $('envFile').value, workspace: $('workspace').value, mode: $('mode').value, network: $('network').value });
+    renderState(); $('applyMsg').textContent = 'applied';
+  } catch (e) { $('applyMsg').textContent = 'failed: ' + e.message; }
+  finally { $('applyBtn').disabled = false; }
+}
+
+async function answer(id, value) { try { await api('/api/prompts/answer', { id, answer: value }); } catch (e) { /* gone */ } pollPrompts(); }
+
+async function pollPrompts() {
+  try {
+    const data = await api('/api/prompts');
+    $('prompts').replaceChildren(...data.pending.map(p => el('div', { class: 'prompt' },
+      el('div', { class: 'q', text: p.question }),
+      el('div', { class: 'row', style: 'margin:0' },
+        el('button', { class: 'yes', text: 'Yes (once)', onclick: () => answer(p.id, 'yes') }),
+        ...(p.offerAll ? [el('button', { class: 'yes', text: 'All (session)', onclick: () => answer(p.id, 'all') })] : []),
+        el('button', { class: 'no', text: 'No', onclick: () => answer(p.id, 'no') }),
+        el('span', { class: 'muted', text: Math.ceil(p.remainingMs / 1000) + 's left' })))));
+    $('history').replaceChildren(...data.history.map(h => el('div', { text: `${h.at}  ${h.outcome.toUpperCase()}  ${h.question}` })));
+    document.title = data.pending.length ? '(!) Approval needed - Shell sandbox playground' : 'Shell sandbox playground';
+  } catch (e) { /* server stopped */ }
+}
+
+$('runBtn').onclick = run;
+$('runAllBtn').onclick = runAll;
+$('applyBtn').onclick = apply;
+$('command').addEventListener('keydown', e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); } });
+$('pollBtn').onclick = async () => { if (!lastBackgroundId) return; const r = await api('/api/output', { id: lastBackgroundId }); $('output').textContent = r.output; };
+$('killBtn').onclick = async () => { if (!lastBackgroundId) return; const r = await api('/api/kill', { id: lastBackgroundId }); $('output').textContent = r.output; };
+
+api('/api/state').then(s => { state = s; renderState(); }).catch(e => { $('output').textContent = 'Cannot load state: ' + e.message; });
+setInterval(pollPrompts, 500);
+</script>
+</body>
+</html>

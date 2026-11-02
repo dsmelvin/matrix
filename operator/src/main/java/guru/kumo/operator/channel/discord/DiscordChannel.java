@@ -18,7 +18,7 @@ import guru.kumo.operator.service.AgentOperatorService;
 import guru.kumo.operator.service.ChatMemoryService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.Resource;
@@ -49,11 +49,11 @@ public class DiscordChannel extends Thread implements Channel {
     public DiscordChannel(List<SlashCommand> slashCommandList,
                           AgentOperatorService agentOperatorService,
                           ChatMemoryService chatMemoryService,
-                          @Autowired(required = false) GatewayDiscordClient gatewayDiscordClient,
+                          ObjectProvider<GatewayDiscordClient> gatewayDiscordClientProvider,
                           @Value("${agent.channel.discord.token}") String apiToken,
                           @Value("${agent.channel.discord.channelId}") String channelId) {
-        if (gatewayDiscordClient == null) return;
         if (!StringUtils.hasLength(channelId) || !StringUtils.hasLength(apiToken)) return;
+        GatewayDiscordClient gatewayDiscordClient = gatewayDiscordClientProvider.getObject();
         snowflakeChannelId = Snowflake.of(channelId);
         this.channelId = channelId;
         this.slashCommandList = slashCommandList;

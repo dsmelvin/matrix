@@ -8,8 +8,10 @@ import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor;
 import lombok.extern.slf4j.Slf4j;
+import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -49,24 +51,14 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
     public static final AtomicBoolean alwaysRun = new AtomicBoolean(false);
 
     private final JsonMapper jsonMapper = JacksonUtils.getDefaultJsonMapper();
-    // @formatter:off
-        private static final ObservationRegistry DEFAULT_OBSERVATION_REGISTRY
-                = ObservationRegistry.NOOP;
-
-        private static final ToolCallingObservationConvention DEFAULT_OBSERVATION_CONVENTION
-                = new DefaultToolCallingObservationConvention();
-
-        private static final ToolCallbackResolver DEFAULT_TOOL_CALLBACK_RESOLVER
-                = new DelegatingToolCallbackResolver(List.of());
-
-        private static final ToolExecutionExceptionProcessor DEFAULT_TOOL_EXECUTION_EXCEPTION_PROCESSOR
-                = DefaultToolExecutionExceptionProcessor.builder().build();
-
+// @formatter:off
+        private static final ObservationRegistry DEFAULT_OBSERVATION_REGISTRY = ObservationRegistry.NOOP;
+        private static final ToolCallingObservationConvention DEFAULT_OBSERVATION_CONVENTION = new DefaultToolCallingObservationConvention();
+        private static final ToolCallbackResolver DEFAULT_TOOL_CALLBACK_RESOLVER = new DelegatingToolCallbackResolver(List.of());
+        private static final ToolExecutionExceptionProcessor DEFAULT_TOOL_EXECUTION_EXCEPTION_PROCESSOR = DefaultToolExecutionExceptionProcessor.builder().build();
         private static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_START = "LLM may have adapted the tool name '";
-        private static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_END
-                = "', especially if the name was truncated due to length limits. If this is the case, you can customize the prefixing and processing logic using McpToolNamePrefixGenerator";
-
-        // @formatter:on
+        private static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_END = "', especially if the name was truncated due to length limits. If this is the case, you can customize the prefixing and processing logic using McpToolNamePrefixGenerator";
+// @formatter:on
 
     public static final int DEFAULT_MAX_CALLS_PER_TOOL = 40;
     public static final int DEFAULT_MAX_TOTAL_TOOL_CALLS = 150;
@@ -75,10 +67,12 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
     private final ToolCallbackResolver toolCallbackResolver;
     private final ToolExecutionExceptionProcessor toolExecutionExceptionProcessor;
     private final ToolCallLimits toolCallLimits;
+    private final InterruptController interruptController; // null when Ctrl-C cancellation is not wired in
     private ToolCallingObservationConvention observationConvention = DEFAULT_OBSERVATION_CONVENTION;
 
     OperatorToolCallingManager(Terminal terminal, ObservationRegistry observationRegistry, ToolCallbackResolver toolCallbackResolver,
-                               ToolExecutionExceptionProcessor toolExecutionExceptionProcessor, ToolCallLimits toolCallLimits) {
+                               ToolExecutionExceptionProcessor toolExecutionExceptionProcessor, ToolCallLimits toolCallLimits,
+                               InterruptController interruptController) {
         Assert.notNull(observationRegistry, "observationRegistry cannot be null");
         Assert.notNull(toolCallbackResolver, "toolCallbackResolver cannot be null");
         Assert.notNull(toolExecutionExceptionProcessor, "toolCallExceptionConverter cannot be null");
@@ -89,6 +83,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         this.toolCallbackResolver = toolCallbackResolver;
         this.toolExecutionExceptionProcessor = toolExecutionExceptionProcessor;
         this.toolCallLimits = toolCallLimits;
+        this.interruptController = interruptController;
     }
 
     @Override
@@ -146,10 +141,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         InternalToolExecutionResult internalToolExecutionResult = executeToolCall(prompt, assistantMessage, toolContext);
         List<Message> conversationHistory = buildConversationHistoryAfterToolExecution(prompt.getInstructions(), assistantMessage, internalToolExecutionResult.toolResponseMessage());
 
-        return ToolExecutionResult.builder()
-                .conversationHistory(conversationHistory)
-                .returnDirect(internalToolExecutionResult.returnDirect())
-                .build();
+        return ToolExecutionResult.builder().conversationHistory(conversationHistory).returnDirect(internalToolExecutionResult.returnDirect()).build();
     }
 
     private static ToolContext buildToolContext(Prompt prompt, AssistantMessage assistantMessage) {
@@ -178,6 +170,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         int totalToolCallCount = toolCallCounts.values().stream().mapToInt(Integer::intValue).sum();
 
         for (AssistantMessage.ToolCall toolCall : assistantMessage.getToolCalls()) {
+            if (interruptController != null) interruptController.checkCancelled();
             String toolName = toolCall.name();
             if (toolName.equals(ShellTools.TOOL_NAME)) {
                 BashInput bashInput = jsonMapper.readValue(toolCall.arguments(), BashInput.class);
@@ -185,8 +178,14 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
                     String nextLine = "";
                     while (nextLine.trim().isEmpty()) {
                         Utils.discardPendingInput();
-                        nextLine = reader.readLine(String.format("%n%sAsking permission to run (yes, all or rejected reason):%s%n%s%s%n%n",
-                                ColorEnum.BLINK_BOLD_RED, ColorEnum.RESET, ColorEnum.BOLD_HIGH_INTENSITY_RED + bashInput.command(), ColorEnum.RESET));
+                        try {
+                            nextLine = reader.readLine(String.format("%n%sAsking permission to run (yes, all or rejected reason):%s%n%s%s%n%n",
+                                    ColorEnum.BLINK_BOLD_RED, ColorEnum.RESET, ColorEnum.BOLD_HIGH_INTENSITY_RED + bashInput.command(), ColorEnum.RESET));
+                        } catch (UserInterruptException | EndOfFileException e) {
+                            // Ctrl-C / Ctrl-D at the permission question cancels the whole turn.
+                            if (interruptController == null) throw e;
+                            throw interruptController.cancelTurnFromPrompt();
+                        }
                     }
                     if (nextLine.equalsIgnoreCase("all")) {
                         alwaysRun.set(true);
@@ -244,7 +243,8 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
                     log.warn(POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_START + toolName
                             + POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_END);
                 }
-                throw new IllegalStateException("No ToolCallback found for tool name: " + toolName);
+                toolResponses.add(new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, "No ToolCallback found for tool name: " + toolName + " with this subagent."));
+                continue;
             }
 
             if (returnDirect == null) {
@@ -319,9 +319,15 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         private int maxTotalToolCalls = DEFAULT_MAX_TOTAL_TOOL_CALLS;
         private ToolCallLimitBehavior onLimitExceeded = ToolCallLimitBehavior.THROW;
         private Terminal terminal;
+        private InterruptController interruptController;
 
         public Builder terminal(Terminal terminal) {
             this.terminal = terminal;
+            return this;
+        }
+
+        public Builder interruptController(InterruptController interruptController) {
+            this.interruptController = interruptController;
             return this;
         }
 
@@ -386,7 +392,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         public OperatorToolCallingManager build() {
             ToolCallLimits toolCallLimits = new ToolCallLimits(this.defaultMaxCallsPerTool, this.maxCallsPerTool,
                     this.toolsExcludedFromLimit, this.maxTotalToolCalls, this.onLimitExceeded);
-            return new OperatorToolCallingManager(this.terminal, this.observationRegistry, this.toolCallbackResolver, this.toolExecutionExceptionProcessor, toolCallLimits);
+            return new OperatorToolCallingManager(this.terminal, this.observationRegistry, this.toolCallbackResolver, this.toolExecutionExceptionProcessor, toolCallLimits, this.interruptController);
         }
     }
 }

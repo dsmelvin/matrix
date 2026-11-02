@@ -4,11 +4,13 @@ import discord4j.core.GatewayDiscordClient;
 import guru.kumo.operator.channel.model.AgentResponse;
 import guru.kumo.operator.configuration.AgentProfilesConfiguration;
 import guru.kumo.operator.configuration.CustomMcpConfiguration;
+import guru.kumo.operator.configuration.GoogleGenAiConfiguration;
 import guru.kumo.operator.configuration.SkillProfilesConfiguration;
 import guru.kumo.operator.model.AgentProfile;
 import guru.kumo.operator.model.SkillProfile;
 import guru.kumo.operator.tool.*;
 import guru.kumo.operator.util.ColorEnum;
+import guru.kumo.operator.util.EnvFileLoader;
 import lombok.extern.slf4j.Slf4j;
 import org.jline.terminal.Terminal;
 import org.springframework.ai.chat.client.ChatClient;
@@ -18,6 +20,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
+import org.springframework.ai.google.genai.GoogleGenAiChatModel;
+import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
+import org.springframework.ai.google.genai.common.GoogleGenAiThinkingLevel;
 import org.springframework.ai.image.ImageModel;
 import org.springframework.ai.image.ImagePrompt;
 import org.springframework.ai.image.ImageResponse;
@@ -28,13 +33,15 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 import reactor.util.concurrent.Queues;
@@ -43,6 +50,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CancellationException;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -50,6 +58,7 @@ import java.util.stream.Collectors;
 @Service
 @Profile("operator")
 public class AgentOperator {
+    private static final String GOOGLE_GENAI = "google-genai";
     private static final DefaultTaskRepository defaultTaskRepository = new DefaultTaskRepository();
     private static final Sinks.Many<AgentResponse> sink = Sinks.many().multicast().onBackpressureBuffer(Queues.SMALL_BUFFER_SIZE, false);
 
@@ -57,6 +66,7 @@ public class AgentOperator {
     private final ImageModel imageModel;
     private final CustomMcpConfiguration customMcpConfiguration;
     private final ChatMemoryService chatMemoryService;
+    private final InterruptController interruptController;
     private final ToolCallingManager toolCallingManager;
     private final ToolCallingChatOptions.Builder<? extends ToolCallingChatOptions.Builder<?>> toolCallingChatOptionsBuilder;
     private final Set<ToolCallback> allowedTools;
@@ -67,31 +77,63 @@ public class AgentOperator {
 
     AgentOperator(
             Terminal terminal,
-            ChatModel chatModel,
+            InterruptController interruptController,
+            ApplicationContext applicationContext,
             ChatMemoryService chatMemoryService,
             CustomMcpConfiguration customMcpConfiguration,
             @Value("${agent.tools}") String[] agentToolList,
             AgentProfilesConfiguration agentProfilesConfiguration,
             SkillProfilesConfiguration skillProfilesConfiguration,
-            @Autowired(required = false) ImageModel imageModel,
-            @Autowired(required = false) GatewayDiscordClient gatewayDiscordClient) {
+            ObjectProvider<GatewayDiscordClient> gatewayDiscordClientProvider,
+            @Value("${agent.channel.discord.token}") String discordToken) {
+        // Only log in to Discord when a token is configured at runtime (the client bean itself is lazy).
+        GatewayDiscordClient gatewayDiscordClient = StringUtils.hasText(discordToken) ? gatewayDiscordClientProvider.getIfAvailable() : null;
+        ChatModel chatModel = selectChatModel(applicationContext);
         this.chatModel = chatModel;
-        this.imageModel = imageModel;
+        this.imageModel = selectImageModel(applicationContext);
         this.chatMemoryService = chatMemoryService;
+        this.interruptController = interruptController;
         this.customMcpConfiguration = customMcpConfiguration;
 
         this.agentProfileMap = agentProfilesConfiguration.getAgentProfileMap();
         this.skillProfileMap = skillProfilesConfiguration.getSkillProfileMap();
-        this.builtInCallbackToolList = loadTools(chatModel, gatewayDiscordClient, customMcpConfiguration.customMcpToolCallbackProvider(), this::publish);
+        this.builtInCallbackToolList = loadTools(terminal, chatModel, gatewayDiscordClient, customMcpConfiguration.customMcpToolCallbackProvider(), this::publish);
         this.builtInCallbackToolList.forEach(toolCallback -> builtInCallbackToolMap.put(toolCallback.getToolDefinition().name(), toolCallback));
         this.allowedTools = Arrays.stream(agentToolList).filter(builtInCallbackToolMap::containsKey).map(builtInCallbackToolMap::get).collect(Collectors.toSet());
 
-        this.toolCallingManager = OperatorToolCallingManager.builder().terminal(terminal).maxCallsPerTool(200).maxTotalToolCalls(1000).build();
+        this.toolCallingManager = OperatorToolCallingManager.builder().terminal(terminal).interruptController(interruptController).maxCallsPerTool(200).maxTotalToolCalls(1000).build();
         if (chatModel instanceof OpenAiChatModel) {
             this.toolCallingChatOptionsBuilder = ((OpenAiChatModel) chatModel).getOptions().mutate().timeout(Duration.ofMinutes(30)).parallelToolCalls(true);
+        } else if (chatModel instanceof GoogleGenAiChatModel) {
+            this.toolCallingChatOptionsBuilder = ((GoogleGenAiChatOptions) chatModel.getOptions()).mutate();
         } else {
             this.toolCallingChatOptionsBuilder = ((ToolCallingChatOptions) chatModel.getOptions()).mutate();
         }
+    }
+
+    // The provider is chosen at runtime (AI_MODEL_CHAT / AI_MODEL_IMAGE from the env file or OS environment), because
+    // @Conditional* is frozen at build time in a native image. See GoogleGenAiConfiguration.
+    private static ChatModel selectChatModel(ApplicationContext context) {
+        if (GOOGLE_GENAI.equals(EnvFileLoader.getenv("AI_MODEL_CHAT"))) {
+            log.info("Chat model provider: {}", GOOGLE_GENAI);
+            return context.getBean(GoogleGenAiConfiguration.CHAT_MODEL_BEAN_NAME, ChatModel.class);
+        }
+        log.info("Chat model provider: openai");
+        ChatModel openAiChatModel = context.getBeanProvider(OpenAiChatModel.class).getIfAvailable();
+        return openAiChatModel != null ? openAiChatModel : context.getBean(ChatModel.class);
+    }
+
+    private static ImageModel selectImageModel(ApplicationContext context) {
+        if (GOOGLE_GENAI.equals(EnvFileLoader.getenv("AI_MODEL_IMAGE"))) {
+            return context.getBean(GoogleGenAiConfiguration.IMAGE_MODEL_BEAN_NAME, ImageModel.class);
+        }
+        // Neither getIfUnique() nor stream() work here: the lazy Google image model is registered as an ImageModel
+        // even though it is not an autowire candidate, and would get instantiated (NPE on the missing Google
+        // credentials). So look up the names and skip it explicitly.
+        String[] names = Arrays.stream(context.getBeanNamesForType(ImageModel.class))
+                .filter(name -> !GoogleGenAiConfiguration.IMAGE_MODEL_BEAN_NAME.equals(name))
+                .toArray(String[]::new);
+        return names.length == 1 ? context.getBean(names[0], ImageModel.class) : null;
     }
 
     public ImageResponse processImageModelRequest(String prompt) {
@@ -133,12 +175,17 @@ public class AgentOperator {
         try {
             publish(new AgentResponse(logPrefix, toolCallingChatOptions));
             chatMemoryService.addChatMemory(conversationId, messages);
+            interruptController.checkCancelled();
             Prompt prompt = new Prompt(chatMemoryService.getChatMemory(conversationId), toolCallingChatOptions);
             ChatResponse chatResponse = chatModel.call(prompt);
             chatMemoryService.addChatMemory(conversationId, chatResponse.getResult());
             publish(new AgentResponse(logPrefix, chatResponse));
             return chatResponse.hasToolCalls() ? processToolCall(toolCallingChatOptions, logPrefix, conversationId, chatResponse) : chatResponse;
+        } catch (CancellationException e) {
+            throw e;
         } catch (Exception e) {
+            // An interrupt (Ctrl-C) can surface as any exception from the HTTP client or a tool.
+            if (interruptController.isCancelled()) throw new CancellationException("Interrupted by user");
             log.error(e.getMessage(), e);
             return new ChatResponse(List.of(new Generation(AssistantMessage.builder().content(e.getMessage()).build())));
         }
@@ -147,25 +194,42 @@ public class AgentOperator {
     private ChatResponse processToolCall(ToolCallingChatOptions toolCallingChatOptions, String logPrefix, String conversationId, ChatResponse chatResponse) {
         while (chatResponse.hasToolCalls() && chatResponse.getResult() != null) {
             chatResponse.getResult().getOutput().getToolCalls().forEach(toolCall -> publish(new AgentResponse(logPrefix, toolCall)));
-            ToolExecutionResult toolExecutionResult = toolCallingManager.executeToolCalls(new Prompt(chatMemoryService.getChatMemory(conversationId), toolCallingChatOptions), chatResponse);
+            ToolExecutionResult toolExecutionResult;
+            try {
+                interruptController.checkCancelled();
+                toolExecutionResult = toolCallingManager.executeToolCalls(new Prompt(chatMemoryService.getChatMemory(conversationId), toolCallingChatOptions), chatResponse);
+            } catch (CancellationException e) {
+                // The assistant message with the tool calls is already in the memory. Every tool call needs a response,
+                // otherwise the next request to the model is rejected.
+                chatMemoryService.addChatMemory(conversationId, interruptedToolResponses(chatResponse));
+                throw e;
+            }
             chatResponse = processCall(toolCallingChatOptions, logPrefix, conversationId, processImageReaderTool(logPrefix, List.of(toolExecutionResult.conversationHistory().getLast())));
         }
         return chatResponse;
+    }
+
+    private static ToolResponseMessage interruptedToolResponses(ChatResponse chatResponse) {
+        ArrayList<ToolResponseMessage.ToolResponse> responses = new ArrayList<>();
+        chatResponse.getResult().getOutput().getToolCalls().forEach(toolCall -> responses.add(
+                new ToolResponseMessage.ToolResponse(toolCall.id(), toolCall.name(), "The user interrupted this tool call before it completed.")));
+        return ToolResponseMessage.builder().responses(responses).build();
     }
 
     private List<Message> processImageReaderTool(String logPrefix, List<Message> conversationHistory) {
         ArrayList<Message> messageArrayList = new ArrayList<>();
         conversationHistory.forEach(conversationHistoryMessage -> {
             if (conversationHistoryMessage instanceof ToolResponseMessage toolResponseMessage) {
+                // Spring AI 2.1 copies the responses into message parts when build() is called, so the
+                // list must be fully populated before building the ToolResponseMessage.
                 ArrayList<ToolResponseMessage.ToolResponse> toolResponseArrayList = new ArrayList<>();
-                ToolResponseMessage newToolResponseMessage = ToolResponseMessage.builder().responses(toolResponseArrayList).build();
-                messageArrayList.add(newToolResponseMessage);
+                ArrayList<Message> imageMessageArrayList = new ArrayList<>();
                 toolResponseMessage.getResponses().forEach(toolCallResponse -> {
                     if (toolCallResponse.name().equals(ImageReaderTool.TOOL_NAME)) {
                         String imagePathName = toolCallResponse.responseData().replace("\"", "");
                         ToolResponseMessage.ToolResponse newToolResponse;
                         try {
-                            messageArrayList.add(decodeAndDescribeImage(imagePathName));
+                            imageMessageArrayList.add(decodeAndDescribeImage(imagePathName));
                             newToolResponse = new ToolResponseMessage.ToolResponse(toolCallResponse.id(), toolCallResponse.name(),
                                     "{\"result\": \"Success to load " + imagePathName + "\"}");
                         } catch (Exception e) {
@@ -179,6 +243,8 @@ public class AgentOperator {
                         publish(new AgentResponse(logPrefix, toolCallResponse));
                     }
                 });
+                messageArrayList.add(ToolResponseMessage.builder().responses(toolResponseArrayList).build());
+                messageArrayList.addAll(imageMessageArrayList);
             } else {
                 messageArrayList.add(conversationHistoryMessage);
             }
@@ -202,7 +268,7 @@ public class AgentOperator {
         }
     }
 
-    private List<ToolCallback> loadTools(ChatModel chatModel, GatewayDiscordClient gatewayDiscordClient, ToolCallbackProvider mcpTools, Consumer<AgentResponse> consumer) {
+    private List<ToolCallback> loadTools(Terminal terminal, ChatModel chatModel, GatewayDiscordClient gatewayDiscordClient, ToolCallbackProvider mcpTools, Consumer<AgentResponse> consumer) {
         List<ToolCallback> builtInCallbackToolList = new ArrayList<>();
         List<Path> allowedDirectoryList = new ArrayList<>();
         String workingDirectory = System.getProperty("user.dir");
@@ -229,13 +295,15 @@ public class AgentOperator {
         }
 
         builtInCallbackToolList.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(
-                ShellTools.builder().build(),
+                ShellTools.builder().workingDirectory(workingDirectory).writableDirectories(allowedDirectoryList).build(),
+                GitTool.builder().workingDirectory(workingDirectory).allowedDirectories(allowedDirectoryList).build(),
                 ImageReaderTool.builder().build(),
                 SmartWebFetchTool.builder(ChatClient.create(chatModel)).build(),
                 GrepTool.builder().workingDirectory(workingDirectory).build(),
                 GlobTool.builder().workingDirectory(workingDirectory).build(),
                 FileSystemTools.builder().allowedDirectories(allowedDirectoryList.toArray(new Path[0])).build(),
-                TodoWriteTool.builder().todoEventHandler(todos -> consumer.accept(new AgentResponse(todos))).build()
+                TodoWriteTool.builder().todoEventHandler(todos -> consumer.accept(new AgentResponse(todos))).build(),
+                AskUserQuestionTool.builder().answersValidation(true).questionHandler(new ConsoleQuestionHandler(terminal, interruptController)).build()
         ).build().getToolCallbacks()));
 
         builtInCallbackToolList.addAll(Arrays.asList(mcpTools.getToolCallbacks()));

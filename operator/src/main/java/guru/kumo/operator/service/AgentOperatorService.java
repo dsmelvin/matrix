@@ -23,10 +23,12 @@ public class AgentOperatorService {
     private static final JsonMapper jsonMapper = new JsonMapper();
     private final AgentOperator agentOperator;
     private final ChatMemoryService chatMemoryService;
+    private final InterruptController interruptController;
 
-    AgentOperatorService(AgentOperator agentOperator, ChatMemoryService chatMemoryService) {
+    AgentOperatorService(AgentOperator agentOperator, ChatMemoryService chatMemoryService, InterruptController interruptController) {
         this.agentOperator = agentOperator;
         this.chatMemoryService = chatMemoryService;
+        this.interruptController = interruptController;
     }
 
     public Flux<AgentResponse> subscribe() {
@@ -54,17 +56,21 @@ public class AgentOperatorService {
         String logPrefix = ColorEnum.PURPLE + "[INIT]" + ColorEnum.RESET;
         agentOperator.publish(new AgentResponse(logPrefix, AgentResponse.Type.INIT, messageList));
         if (messageList.stream().anyMatch(message -> message.getMessageType() == MessageType.USER)) {
-            agentOperator.processCall(logPrefix, conversationId, messageList);
+            // Ctrl-C cancels this turn; the conversation id is still returned so the console can carry on with it.
+            interruptController.runTurn(() -> agentOperator.processCall(logPrefix, conversationId, messageList));
         } else {
             chatMemoryService.addChatMemory(conversationId, messageList);
         }
         return conversationId;
     }
 
-    public void processConsoleRequest(String conversationId, List<Message> messageList) {
+    /**
+     * @return {@code true} if the request completed, {@code false} if the user cancelled it with Ctrl-C
+     */
+    public boolean processConsoleRequest(String conversationId, List<Message> messageList) {
         String logPrefix = ColorEnum.PURPLE + "[CONSOLE]" + ColorEnum.RESET;
         agentOperator.publish(new AgentResponse(logPrefix, AgentResponse.Type.CONSOLE, messageList));
-        agentOperator.processCall(logPrefix, conversationId, messageList);
+        return interruptController.runTurn(() -> agentOperator.processCall(logPrefix, conversationId, messageList));
     }
 
     public String processDiscordRequest(String conversationId, List<Message> messageList) {
