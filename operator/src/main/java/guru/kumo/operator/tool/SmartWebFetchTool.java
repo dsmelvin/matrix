@@ -29,9 +29,9 @@ public class SmartWebFetchTool implements AutoCloseable {
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofMinutes(10);
+    private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
-    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofMinutes(30);
+    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     private static final Duration CACHE_TTL = Duration.ofMinutes(60);
 

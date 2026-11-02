@@ -15,8 +15,11 @@ public class ShutdownHandler {
     List<Channel> channelList;
     private final ChatMemoryService chatMemoryService;
     private final AgentOperator agentOperator;
+    private final InterruptController interruptController;
 
-    ShutdownHandler(List<Channel> channelList, ChatMemoryService chatMemoryService, AgentOperator agentOperator) {
+    ShutdownHandler(List<Channel> channelList, ChatMemoryService chatMemoryService, AgentOperator agentOperator,
+                    InterruptController interruptController) {
+        this.interruptController = interruptController;
         this.channelList = channelList;
         this.chatMemoryService = chatMemoryService;
         this.agentOperator = agentOperator;
@@ -25,6 +28,8 @@ public class ShutdownHandler {
     @PreDestroy
     public void onShutdown() {
         log.info("Performing Spring-managed cleanup ...");
+        // Stop the running console turn first, so that the chat memory saved below is consistent.
+        interruptController.beginShutdown();
         channelList.forEach(Channel::shutdown);
         chatMemoryService.shutdown();
         agentOperator.shutdown();

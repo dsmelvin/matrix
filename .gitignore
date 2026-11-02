@@ -1,6 +1,7 @@
 .env
 .env-docker
 /workspace
+.java-version
 
 .DS_Store
 target/

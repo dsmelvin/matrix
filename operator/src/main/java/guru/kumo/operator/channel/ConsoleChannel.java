@@ -3,6 +3,7 @@ package guru.kumo.operator.channel;
 import guru.kumo.operator.model.BashInput;
 import guru.kumo.operator.service.AgentOperatorService;
 import guru.kumo.operator.service.ChatMemoryService;
+import guru.kumo.operator.service.InterruptController;
 import guru.kumo.operator.tool.*;
 import guru.kumo.operator.util.ColorEnum;
 import guru.kumo.operator.util.Utils;
@@ -25,7 +26,6 @@ import tools.jackson.databind.json.JsonMapper;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Service
@@ -37,11 +37,14 @@ public class ConsoleChannel extends Thread implements Channel {
     private final Terminal terminal;
     private final AgentOperatorService agentOperatorService;
     private final ChatMemoryService chatMemoryService;
+    private final InterruptController interruptController;
     @Setter
     private String conversationId;
 
-    public ConsoleChannel(Terminal terminal, AgentOperatorService agentOperatorService, ChatMemoryService chatMemoryService) {
+    public ConsoleChannel(Terminal terminal, AgentOperatorService agentOperatorService, ChatMemoryService chatMemoryService,
+                          InterruptController interruptController) {
         this.terminal = terminal;
+        this.interruptController = interruptController;
         this.agentOperatorService = agentOperatorService;
         this.chatMemoryService = chatMemoryService;
         this.conversationId = chatMemoryService.createConversationId();
@@ -72,9 +75,6 @@ public class ConsoleChannel extends Thread implements Channel {
 
     @Override
     public void run() {
-        AtomicBoolean isTerminating = new AtomicBoolean(false);
-        terminal.handle(Terminal.Signal.INT, signal -> isTerminating.set(true));
-
         LineReader reader = LineReaderBuilder.builder()
                 .terminal(terminal)
                 .option(LineReader.Option.BRACKETED_PASTE, true)
@@ -86,27 +86,37 @@ public class ConsoleChannel extends Thread implements Channel {
         StringBuilder buffer = new StringBuilder();
         boolean collecting = false;
 
-        try {
-            while (!isTerminating.get()) {
-                Utils.discardPendingInput();
-                String nextLine = reader.readLine(collecting ? "" : firstPrompt);
-                if (nextLine == null) break; // EOF
-
-                boolean blank = nextLine.isBlank();
-
-                if (!collecting) {
-                    if (blank) continue;
-                    buffer.setLength(0);
-                    buffer.append(nextLine.stripLeading());
-                    collecting = true;
-                } else if (blank) {
-                    sendMessage(buffer.toString());
-                    collecting = false;
-                } else {
-                    buffer.append(System.lineSeparator()).append(nextLine);
-                }
+        while (!interruptController.isShuttingDown()) {
+            Utils.discardPendingInput();
+            String nextLine;
+            try {
+                nextLine = reader.readLine(collecting ? "" : firstPrompt);
+            } catch (UserInterruptException e) {
+                // Ctrl-C at the prompt: drop whatever was typed and wait for input again. A second Ctrl-C within
+                // the exit window exits through the Spring context, which runs ShutdownHandler.
+                boolean hadInput = collecting || !e.getPartialLine().isBlank();
+                buffer.setLength(0);
+                collecting = false;
+                interruptController.onPromptInterrupted(hadInput);
+                continue;
+            } catch (EndOfFileException e) {
+                break; // EOF (Ctrl-D or closed stdin)
             }
-        } catch (UserInterruptException | EndOfFileException ignored) {
+            if (nextLine == null) break; // EOF
+
+            boolean blank = nextLine.isBlank();
+
+            if (!collecting) {
+                if (blank) continue;
+                buffer.setLength(0);
+                buffer.append(nextLine.stripLeading());
+                collecting = true;
+            } else if (blank) {
+                sendMessage(buffer.toString());
+                collecting = false;
+            } else {
+                buffer.append(System.lineSeparator()).append(nextLine);
+            }
         }
     }
 

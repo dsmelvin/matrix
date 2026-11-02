@@ -31,7 +31,7 @@ while [ "$#" -gt 0 ]; do
                 echo "$2 not found"
                 exit 1
             fi
-            echo "- env file id loaded from $2."
+            echo "- env file loaded from $2 (mounted as /operator.env)."
             ENV_FILE=$2
             shift 2 
             ;;
@@ -64,7 +64,9 @@ if [ "$ENV_FILE" == "" ];then
     exit 1
 fi
 
-DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) --env-file $ENV_FILE -ti --rm -w /workspace"
+# The env file is no longer handed to docker (--env-file takes values literally). It is mounted read-only and the
+# operator loads it itself (-e/--env-file), which also replaces a leading "~" with the user home.
+DOCKER_VAR="run -e UID=$(id -u) -e GID=$(id -g) -v $(realpath $ENV_FILE):/operator.env:ro -ti --rm -w /workspace"
 
 if [ "$NAME" != "" ];then
     DOCKER_VAR+=" --name $NAME"
@@ -76,4 +78,4 @@ if [ "$METADATA" != "" ];then
     DOCKER_VAR+=" -v $(realpath $METADATA):/metadata:ro"
 fi
 
-docker $DOCKER_VAR matrix-operator /app/bin/run ${@:1}
+docker $DOCKER_VAR matrix-operator /app/bin/run -e /operator.env -w /workspace ${@:1}

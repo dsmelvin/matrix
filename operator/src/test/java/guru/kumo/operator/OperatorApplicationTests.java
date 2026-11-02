@@ -14,6 +14,7 @@ import org.springframework.test.context.ActiveProfiles;
 @EnableAutoConfiguration(exclude = {
         OpenAiChatAutoConfiguration.class,
         OpenAiImageAutoConfiguration.class,
+        OpenAiDecisionAutoConfiguration.class,
         GoogleGenAiChatAutoConfiguration.class,
         OpenAiEmbeddingAutoConfiguration.class,
         OpenAiModerationAutoConfiguration.class,
