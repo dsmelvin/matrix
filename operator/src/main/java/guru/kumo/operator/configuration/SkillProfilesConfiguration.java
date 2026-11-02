@@ -38,7 +38,7 @@ public class SkillProfilesConfiguration {
             String skillAbsolutePath = Utils.getAbsolutePath(skillPath);
             if (visitedSkills.contains(skillAbsolutePath)) return;
             visitedSkills.add(skillAbsolutePath);
-            try (Stream<Path> pathStream = Files.walk(Path.of("").toAbsolutePath().resolve(skillPath))) {
+            try (Stream<Path> pathStream = Files.walk(Path.of(skillAbsolutePath))) {
                 pathStream.filter(Files::isRegularFile)
                         .filter(path -> path.getFileName().toString().equals(SkillProfile.SKILL_FILE_NAME))
                         .forEach(path -> ProfileUtil.buildSkillProfile(path).ifPresent(profile -> skillProfileMap.put(profile.getName(), profile)));

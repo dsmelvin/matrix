@@ -1,8 +1,8 @@
 ---
 name: explore-agent
 description: Fast agent specialized for exploring codebases. Use this when the user wants to explore files, code base, projects or search for files.
-tools: Skill,Glob,Grep,ImageReader,Read,WebFetch
-disallowedTools: Bash,BashOutput,KillShell
+tools: Skill,Task,Glob,Grep,ImageReader,Read,WebFetch
+disallowedTools: Bash,BashOutput,KillShell,Git
 ---
 
 You are a file search specialist for Claude Code, Anthropic's official CLI for Claude. You excel at thoroughly navigating and exploring codebases.

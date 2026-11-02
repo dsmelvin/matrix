@@ -4,11 +4,13 @@ import discord4j.core.GatewayDiscordClient;
 import guru.kumo.operator.channel.model.AgentResponse;
 import guru.kumo.operator.configuration.AgentProfilesConfiguration;
 import guru.kumo.operator.configuration.CustomMcpConfiguration;
+import guru.kumo.operator.configuration.GoogleGenAiConfiguration;
 import guru.kumo.operator.configuration.SkillProfilesConfiguration;
 import guru.kumo.operator.model.AgentProfile;
 import guru.kumo.operator.model.SkillProfile;
 import guru.kumo.operator.tool.*;
 import guru.kumo.operator.util.ColorEnum;
+import guru.kumo.operator.util.EnvFileLoader;
 import lombok.extern.slf4j.Slf4j;
 import org.jline.terminal.Terminal;
 import org.springframework.ai.chat.client.ChatClient;
@@ -18,6 +20,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
+import org.springframework.ai.google.genai.GoogleGenAiChatModel;
+import org.springframework.ai.google.genai.GoogleGenAiChatOptions;
+import org.springframework.ai.google.genai.common.GoogleGenAiThinkingLevel;
 import org.springframework.ai.image.ImageModel;
 import org.springframework.ai.image.ImagePrompt;
 import org.springframework.ai.image.ImageResponse;
@@ -28,13 +33,15 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 import reactor.util.concurrent.Queues;
@@ -50,6 +57,7 @@ import java.util.stream.Collectors;
 @Service
 @Profile("operator")
 public class AgentOperator {
+    private static final String GOOGLE_GENAI = "google-genai";
     private static final DefaultTaskRepository defaultTaskRepository = new DefaultTaskRepository();
     private static final Sinks.Many<AgentResponse> sink = Sinks.many().multicast().onBackpressureBuffer(Queues.SMALL_BUFFER_SIZE, false);
 
@@ -67,16 +75,19 @@ public class AgentOperator {
 
     AgentOperator(
             Terminal terminal,
-            ChatModel chatModel,
+            ApplicationContext applicationContext,
             ChatMemoryService chatMemoryService,
             CustomMcpConfiguration customMcpConfiguration,
             @Value("${agent.tools}") String[] agentToolList,
             AgentProfilesConfiguration agentProfilesConfiguration,
             SkillProfilesConfiguration skillProfilesConfiguration,
-            @Autowired(required = false) ImageModel imageModel,
-            @Autowired(required = false) GatewayDiscordClient gatewayDiscordClient) {
+            ObjectProvider<GatewayDiscordClient> gatewayDiscordClientProvider,
+            @Value("${agent.channel.discord.token}") String discordToken) {
+        // Only log in to Discord when a token is configured at runtime (the client bean itself is lazy).
+        GatewayDiscordClient gatewayDiscordClient = StringUtils.hasText(discordToken) ? gatewayDiscordClientProvider.getIfAvailable() : null;
+        ChatModel chatModel = selectChatModel(applicationContext);
         this.chatModel = chatModel;
-        this.imageModel = imageModel;
+        this.imageModel = selectImageModel(applicationContext);
         this.chatMemoryService = chatMemoryService;
         this.customMcpConfiguration = customMcpConfiguration;
 
@@ -89,9 +100,36 @@ public class AgentOperator {
         this.toolCallingManager = OperatorToolCallingManager.builder().terminal(terminal).maxCallsPerTool(200).maxTotalToolCalls(1000).build();
         if (chatModel instanceof OpenAiChatModel) {
             this.toolCallingChatOptionsBuilder = ((OpenAiChatModel) chatModel).getOptions().mutate().timeout(Duration.ofMinutes(30)).parallelToolCalls(true);
+        } else if (chatModel instanceof GoogleGenAiChatModel) {
+            this.toolCallingChatOptionsBuilder = ((GoogleGenAiChatOptions) chatModel.getOptions()).mutate();
         } else {
             this.toolCallingChatOptionsBuilder = ((ToolCallingChatOptions) chatModel.getOptions()).mutate();
         }
+    }
+
+    // The provider is chosen at runtime (AI_MODEL_CHAT / AI_MODEL_IMAGE from the env file or OS environment), because
+    // @Conditional* is frozen at build time in a native image. See GoogleGenAiConfiguration.
+    private static ChatModel selectChatModel(ApplicationContext context) {
+        if (GOOGLE_GENAI.equals(EnvFileLoader.getenv("AI_MODEL_CHAT"))) {
+            log.info("Chat model provider: {}", GOOGLE_GENAI);
+            return context.getBean(GoogleGenAiConfiguration.CHAT_MODEL_BEAN_NAME, ChatModel.class);
+        }
+        log.info("Chat model provider: openai");
+        ChatModel openAiChatModel = context.getBeanProvider(OpenAiChatModel.class).getIfAvailable();
+        return openAiChatModel != null ? openAiChatModel : context.getBean(ChatModel.class);
+    }
+
+    private static ImageModel selectImageModel(ApplicationContext context) {
+        if (GOOGLE_GENAI.equals(EnvFileLoader.getenv("AI_MODEL_IMAGE"))) {
+            return context.getBean(GoogleGenAiConfiguration.IMAGE_MODEL_BEAN_NAME, ImageModel.class);
+        }
+        // Neither getIfUnique() nor stream() work here: the lazy Google image model is registered as an ImageModel
+        // even though it is not an autowire candidate, and would get instantiated (NPE on the missing Google
+        // credentials). So look up the names and skip it explicitly.
+        String[] names = Arrays.stream(context.getBeanNamesForType(ImageModel.class))
+                .filter(name -> !GoogleGenAiConfiguration.IMAGE_MODEL_BEAN_NAME.equals(name))
+                .toArray(String[]::new);
+        return names.length == 1 ? context.getBean(names[0], ImageModel.class) : null;
     }
 
     public ImageResponse processImageModelRequest(String prompt) {
@@ -157,15 +195,16 @@ public class AgentOperator {
         ArrayList<Message> messageArrayList = new ArrayList<>();
         conversationHistory.forEach(conversationHistoryMessage -> {
             if (conversationHistoryMessage instanceof ToolResponseMessage toolResponseMessage) {
+                // Spring AI 2.1 copies the responses into message parts when build() is called, so the
+                // list must be fully populated before building the ToolResponseMessage.
                 ArrayList<ToolResponseMessage.ToolResponse> toolResponseArrayList = new ArrayList<>();
-                ToolResponseMessage newToolResponseMessage = ToolResponseMessage.builder().responses(toolResponseArrayList).build();
-                messageArrayList.add(newToolResponseMessage);
+                ArrayList<Message> imageMessageArrayList = new ArrayList<>();
                 toolResponseMessage.getResponses().forEach(toolCallResponse -> {
                     if (toolCallResponse.name().equals(ImageReaderTool.TOOL_NAME)) {
                         String imagePathName = toolCallResponse.responseData().replace("\"", "");
                         ToolResponseMessage.ToolResponse newToolResponse;
                         try {
-                            messageArrayList.add(decodeAndDescribeImage(imagePathName));
+                            imageMessageArrayList.add(decodeAndDescribeImage(imagePathName));
                             newToolResponse = new ToolResponseMessage.ToolResponse(toolCallResponse.id(), toolCallResponse.name(),
                                     "{\"result\": \"Success to load " + imagePathName + "\"}");
                         } catch (Exception e) {
@@ -179,6 +218,8 @@ public class AgentOperator {
                         publish(new AgentResponse(logPrefix, toolCallResponse));
                     }
                 });
+                messageArrayList.add(ToolResponseMessage.builder().responses(toolResponseArrayList).build());
+                messageArrayList.addAll(imageMessageArrayList);
             } else {
                 messageArrayList.add(conversationHistoryMessage);
             }
@@ -229,7 +270,8 @@ public class AgentOperator {
         }
 
         builtInCallbackToolList.addAll(Arrays.asList(MethodToolCallbackProvider.builder().toolObjects(
-                ShellTools.builder().build(),
+                ShellTools.builder().workingDirectory(workingDirectory).writableDirectories(allowedDirectoryList).build(),
+                GitTool.builder().workingDirectory(workingDirectory).allowedDirectories(allowedDirectoryList).build(),
                 ImageReaderTool.builder().build(),
                 SmartWebFetchTool.builder(ChatClient.create(chatModel)).build(),
                 GrepTool.builder().workingDirectory(workingDirectory).build(),

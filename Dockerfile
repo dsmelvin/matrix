@@ -36,6 +36,47 @@ COPY parent /matrix/parent
 COPY operator /matrix/operator
 RUN cd matrix && mvn clean package
 
+# ---------------------------------------------------------------------------------------------------------------------
+# GraalVM native-image variant (optional): docker buildx build --target native_deploy_image -t matrix-operator --load .
+#
+# Fully static (musl) executables are only supported by GraalVM on x64, so the native executable is linked against
+# glibc and needs a glibc based runtime image instead of the Alpine one used for the jar. The native-image build
+# needs a lot of RAM (give the Docker VM at least 12GB).
+# ---------------------------------------------------------------------------------------------------------------------
+FROM ghcr.io/graalvm/native-image-community:25 AS native_build_image
+
+ARG MAVEN_VERSION=3.9.11
+ARG MAVEN_SHA512=bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978
+
+RUN curl -fsSL -o /tmp/maven.tar.gz "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" && \
+    echo "${MAVEN_SHA512}  /tmp/maven.tar.gz" | sha512sum -c - && \
+    mkdir -p /opt/maven && \
+    tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 && \
+    rm -f /tmp/maven.tar.gz
+ENV PATH=/opt/maven/bin:$PATH
+
+COPY pom.xml /matrix/pom.xml
+COPY parent /matrix/parent
+COPY operator /matrix/operator
+RUN cd /matrix && mvn -B -Pnative -DskipTests clean package
+
+FROM node:24-bookworm-slim AS native_deploy_image
+ENV LANG=C.UTF-8
+ENV PATH=$PATH:/app/bin
+# The node image ships a "node" user with uid 1000, which would clash with the uid docker-entry.sh creates.
+RUN userdel -r node && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends sudo zlib1g ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY scripts/docker-entry.sh /usr/local/bin
+COPY --from=native_build_image /matrix/operator/target/operator /app/bin/operator
+RUN printf '#!/bin/sh\nexec /app/bin/operator operator "$@"\n' > /app/bin/run && \
+    chmod +x /app/bin/run /usr/local/bin/docker-entry.sh
+ENTRYPOINT ["/usr/local/bin/docker-entry.sh"]
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Default (last) stage: JVM jar
+# ---------------------------------------------------------------------------------------------------------------------
 FROM build_image AS deploy_image
 ENV PATH=$PATH:/app/bin
 RUN apk add --no-cache sudo npm

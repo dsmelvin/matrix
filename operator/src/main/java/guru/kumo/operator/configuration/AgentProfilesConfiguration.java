@@ -38,7 +38,7 @@ public class AgentProfilesConfiguration {
             String agentAbsolutePath = Utils.getAbsolutePath(agentPath);
             if (visitedAgents.contains(agentAbsolutePath)) return;
             visitedAgents.add(agentAbsolutePath);
-            try (Stream<Path> pathStream = Files.walk(Path.of("").toAbsolutePath().resolve(agentPath))) {
+            try (Stream<Path> pathStream = Files.walk(Path.of(agentAbsolutePath))) {
                 pathStream.filter(Files::isRegularFile)
                         .filter(path -> path.getFileName().toString().endsWith(".md"))
                         .forEach(path -> ProfileUtil.buildAgentProfile(path).ifPresent(profile -> agentProfileMap.put(profile.getName(), profile)));

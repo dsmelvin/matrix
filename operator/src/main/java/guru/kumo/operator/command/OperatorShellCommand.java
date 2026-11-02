@@ -6,6 +6,7 @@ import guru.kumo.operator.channel.ConsoleChannel;
 import guru.kumo.operator.service.AgentOperatorService;
 import guru.kumo.operator.service.ChatMessageListCodec;
 import guru.kumo.operator.service.OperatorToolCallingManager;
+import guru.kumo.operator.util.EnvFileLoader;
 import guru.kumo.operator.util.Utils;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.LoggerFactory;
@@ -66,7 +67,17 @@ public class OperatorShellCommand {
             String savedSessionMemoryFileName,
             @Option(longName = "user-prompt", shortName = 'i', required = false, description = "To preload a user prompt")
             String userPrompt,
+            // env-file and workspace are consumed by EnvFileLoader.prepare() in OperatorApplication.main, because the
+            // variables must be in place before the Spring context creates its beans. They are declared here so the
+            // shell accepts them and lists them in "help operator".
+            @Option(longName = EnvFileLoader.ENV_FILE_LONG_OPTION, shortName = EnvFileLoader.ENV_FILE_SHORT_OPTION, required = false,
+                    description = "Env file to load (default: .env in the launch directory). A leading '~' in a value is replaced with the user home")
+            String envFileName,
+            @Option(longName = EnvFileLoader.WORKSPACE_LONG_OPTION, shortName = EnvFileLoader.WORKSPACE_SHORT_OPTION, required = false,
+                    description = "Working directory of the operator (default: the launch directory)")
+            String workspaceName,
             @Arguments List<String> userPromptTokens) {
+        log.info("Workspace: {}, env file variables loaded: {}", System.getProperty("user.dir"), EnvFileLoader.variables().keySet());
         if (alwaysRun) OperatorToolCallingManager.alwaysRun.set(true);
         if (isDebugMode) debugMode();
         ArrayList<Message> messageArrayList = new ArrayList<>();

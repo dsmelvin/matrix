@@ -30,20 +30,20 @@ public class Utils {
     }
 
     public static String getAbsolutePath(String pathName) {
-        Path filePath = Path.of("").toAbsolutePath().resolve(pathName);
-        if (!filePath.toFile().isDirectory() && System.getenv("PWD") != null && !pathName.startsWith("/")) {
-            return Path.of(System.getenv("PWD")).toAbsolutePath().resolve(pathName).toAbsolutePath().toString();
+        Path filePath = Path.of(System.getProperty("user.dir")).toAbsolutePath().resolve(pathName);
+        if (!filePath.toFile().isDirectory() && EnvFileLoader.getenv("PWD") != null && !pathName.startsWith("/")) {
+            return Path.of(EnvFileLoader.getenv("PWD")).toAbsolutePath().resolve(pathName).toAbsolutePath().toString();
         } else {
-            return pathName;
+            return filePath.toString();
         }
     }
 
     public static String getAbsoluteFilePathName(String filePathName) {
-        Path filePath = Path.of("").toAbsolutePath().resolve(filePathName);
-        if (!filePath.toFile().isFile() && System.getenv("PWD") != null && !filePathName.startsWith("/")) {
-            return Path.of(System.getenv("PWD")).toAbsolutePath().resolve(filePathName).toAbsolutePath().toString();
+        Path filePath = Path.of(System.getProperty("user.dir")).toAbsolutePath().resolve(filePathName);
+        if (!filePath.toFile().isFile() && EnvFileLoader.getenv("PWD") != null && !filePathName.startsWith("/")) {
+            return Path.of(EnvFileLoader.getenv("PWD")).toAbsolutePath().resolve(filePathName).toAbsolutePath().toString();
         } else {
-            return filePathName;
+            return filePath.toString();
         }
     }
 

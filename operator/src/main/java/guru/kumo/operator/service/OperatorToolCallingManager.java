@@ -39,6 +39,7 @@ import org.springframework.ai.util.JacksonUtils;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
+import sun.misc.Signal;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.*;
@@ -49,24 +50,14 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
     public static final AtomicBoolean alwaysRun = new AtomicBoolean(false);
 
     private final JsonMapper jsonMapper = JacksonUtils.getDefaultJsonMapper();
-    // @formatter:off
-        private static final ObservationRegistry DEFAULT_OBSERVATION_REGISTRY
-                = ObservationRegistry.NOOP;
-
-        private static final ToolCallingObservationConvention DEFAULT_OBSERVATION_CONVENTION
-                = new DefaultToolCallingObservationConvention();
-
-        private static final ToolCallbackResolver DEFAULT_TOOL_CALLBACK_RESOLVER
-                = new DelegatingToolCallbackResolver(List.of());
-
-        private static final ToolExecutionExceptionProcessor DEFAULT_TOOL_EXECUTION_EXCEPTION_PROCESSOR
-                = DefaultToolExecutionExceptionProcessor.builder().build();
-
+// @formatter:off
+        private static final ObservationRegistry DEFAULT_OBSERVATION_REGISTRY = ObservationRegistry.NOOP;
+        private static final ToolCallingObservationConvention DEFAULT_OBSERVATION_CONVENTION = new DefaultToolCallingObservationConvention();
+        private static final ToolCallbackResolver DEFAULT_TOOL_CALLBACK_RESOLVER = new DelegatingToolCallbackResolver(List.of());
+        private static final ToolExecutionExceptionProcessor DEFAULT_TOOL_EXECUTION_EXCEPTION_PROCESSOR = DefaultToolExecutionExceptionProcessor.builder().build();
         private static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_START = "LLM may have adapted the tool name '";
-        private static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_END
-                = "', especially if the name was truncated due to length limits. If this is the case, you can customize the prefixing and processing logic using McpToolNamePrefixGenerator";
-
-        // @formatter:on
+        private static final String POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_END = "', especially if the name was truncated due to length limits. If this is the case, you can customize the prefixing and processing logic using McpToolNamePrefixGenerator";
+// @formatter:on
 
     public static final int DEFAULT_MAX_CALLS_PER_TOOL = 40;
     public static final int DEFAULT_MAX_TOTAL_TOOL_CALLS = 150;
@@ -76,6 +67,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
     private final ToolExecutionExceptionProcessor toolExecutionExceptionProcessor;
     private final ToolCallLimits toolCallLimits;
     private ToolCallingObservationConvention observationConvention = DEFAULT_OBSERVATION_CONVENTION;
+    final AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     OperatorToolCallingManager(Terminal terminal, ObservationRegistry observationRegistry, ToolCallbackResolver toolCallbackResolver,
                                ToolExecutionExceptionProcessor toolExecutionExceptionProcessor, ToolCallLimits toolCallLimits) {
@@ -89,6 +81,11 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         this.toolCallbackResolver = toolCallbackResolver;
         this.toolExecutionExceptionProcessor = toolExecutionExceptionProcessor;
         this.toolCallLimits = toolCallLimits;
+
+        Signal.handle(new Signal("INT"), signal -> {
+            log.warn("{}Received SIGINT (Ctrl+C): {}{}", ColorEnum.HIGH_INTENSITY_RED, signal.getName(), ColorEnum.RESET);
+            shouldStop.set(true);
+        });
     }
 
     @Override
@@ -131,6 +128,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
     public ToolExecutionResult executeToolCalls(Prompt prompt, ChatResponse chatResponse) {
         Assert.notNull(prompt, "prompt cannot be null");
         Assert.notNull(chatResponse, "chatResponse cannot be null");
+        shouldStop.set(false);
 
         Optional<Generation> toolCallGeneration = chatResponse.getResults()
                 .stream()
@@ -146,10 +144,7 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         InternalToolExecutionResult internalToolExecutionResult = executeToolCall(prompt, assistantMessage, toolContext);
         List<Message> conversationHistory = buildConversationHistoryAfterToolExecution(prompt.getInstructions(), assistantMessage, internalToolExecutionResult.toolResponseMessage());
 
-        return ToolExecutionResult.builder()
-                .conversationHistory(conversationHistory)
-                .returnDirect(internalToolExecutionResult.returnDirect())
-                .build();
+        return ToolExecutionResult.builder().conversationHistory(conversationHistory).returnDirect(internalToolExecutionResult.returnDirect()).build();
     }
 
     private static ToolContext buildToolContext(Prompt prompt, AssistantMessage assistantMessage) {
@@ -178,6 +173,9 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
         int totalToolCallCount = toolCallCounts.values().stream().mapToInt(Integer::intValue).sum();
 
         for (AssistantMessage.ToolCall toolCall : assistantMessage.getToolCalls()) {
+            if (shouldStop.get()) {
+                break;
+            }
             String toolName = toolCall.name();
             if (toolName.equals(ShellTools.TOOL_NAME)) {
                 BashInput bashInput = jsonMapper.readValue(toolCall.arguments(), BashInput.class);
@@ -244,7 +242,8 @@ public final class OperatorToolCallingManager implements ToolCallingManager {
                     log.warn(POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_START + toolName
                             + POSSIBLE_LLM_TOOL_NAME_CHANGE_WARNING_END);
                 }
-                throw new IllegalStateException("No ToolCallback found for tool name: " + toolName);
+                toolResponses.add(new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, "No ToolCallback found for tool name: " + toolName + " with this subagent."));
+                continue;
             }
 
             if (returnDirect == null) {
