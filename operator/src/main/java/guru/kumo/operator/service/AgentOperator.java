@@ -190,15 +190,16 @@ public class AgentOperator {
         ArrayList<Message> messageArrayList = new ArrayList<>();
         conversationHistory.forEach(conversationHistoryMessage -> {
             if (conversationHistoryMessage instanceof ToolResponseMessage toolResponseMessage) {
+                // Spring AI 2.1 copies the responses into message parts when build() is called, so the
+                // list must be fully populated before building the ToolResponseMessage.
                 ArrayList<ToolResponseMessage.ToolResponse> toolResponseArrayList = new ArrayList<>();
-                ToolResponseMessage newToolResponseMessage = ToolResponseMessage.builder().responses(toolResponseArrayList).build();
-                messageArrayList.add(newToolResponseMessage);
+                ArrayList<Message> imageMessageArrayList = new ArrayList<>();
                 toolResponseMessage.getResponses().forEach(toolCallResponse -> {
                     if (toolCallResponse.name().equals(ImageReaderTool.TOOL_NAME)) {
                         String imagePathName = toolCallResponse.responseData().replace("\"", "");
                         ToolResponseMessage.ToolResponse newToolResponse;
                         try {
-                            messageArrayList.add(decodeAndDescribeImage(imagePathName));
+                            imageMessageArrayList.add(decodeAndDescribeImage(imagePathName));
                             newToolResponse = new ToolResponseMessage.ToolResponse(toolCallResponse.id(), toolCallResponse.name(),
                                     "{\"result\": \"Success to load " + imagePathName + "\"}");
                         } catch (Exception e) {
@@ -212,6 +213,8 @@ public class AgentOperator {
                         publish(new AgentResponse(logPrefix, toolCallResponse));
                     }
                 });
+                messageArrayList.add(ToolResponseMessage.builder().responses(toolResponseArrayList).build());
+                messageArrayList.addAll(imageMessageArrayList);
             } else {
                 messageArrayList.add(conversationHistoryMessage);
             }

@@ -12,19 +12,19 @@
         <discord4j-core.version>3.3.3</discord4j-core.version>
         <flexmark.version>0.64.8</flexmark.version>
         <java.version>25</java.version>
-        <lombok.version>1.18.46</lombok.version>
-        <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
-        <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
+        <lombok.version>1.18.48</lombok.version>
+        <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.6.1</maven-surefire-plugin.version>
         <maven.compiler.parameters>true</maven.compiler.parameters>
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
-        <native-build-tools.version>1.1.8</native-build-tools.version>
+        <native-build-tools.version>1.1.18</native-build-tools.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <sortpom-maven-plugin.version>4.0.1</sortpom-maven-plugin.version>
-        <spring-ai.version>2.0.1</spring-ai.version>
-        <spring-boot-dependencies.version>4.1.1</spring-boot-dependencies.version>
+        <spring-ai.version>2.1.0-RC1</spring-ai.version>
+        <spring-boot-dependencies.version>4.1.2</spring-boot-dependencies.version>
         <spring-shell.version>4.0.3</spring-shell.version>
-        <telegrambots.version>10.2.1</telegrambots.version>
+        <telegrambots.version>10.3.0</telegrambots.version>
     </properties>
     <dependencyManagement>
         <dependencies>

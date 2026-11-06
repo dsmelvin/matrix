@@ -1,5 +1,6 @@
 package guru.kumo.operator.tool;
 
+import guru.kumo.operator.util.ColorEnum;
 import guru.kumo.operator.util.EnvFileLoader;
 
 import lombok.extern.slf4j.Slf4j;
@@ -539,8 +540,8 @@ public class ShellTools {
             } else if (effective.mode() == ShellSandbox.Mode.OFF) {
                 log.warn("Shell sandbox is DISABLED, commands run with the full permissions of this process");
             } else if (!effective.isActive()) {
-                log.warn("No usable shell sandbox backend found (mode={}); commands will be {}", effective.mode(),
-                        effective.mode() == ShellSandbox.Mode.REQUIRED ? "refused" : "run WITHOUT a sandbox");
+                log.warn("{}No usable shell sandbox backend found (mode={}); commands will be {}. Install \"bubblewrap\" - https://github.com/containers/bubblewrap or turn mode to OFF.{}", ColorEnum.BOLD_HIGH_INTENSITY_RED, effective.mode(),
+                        effective.mode() == ShellSandbox.Mode.REQUIRED ? "refused" : "run WITHOUT a sandbox", ColorEnum.RESET);
             }
             return new ShellTools(effective);
         }
